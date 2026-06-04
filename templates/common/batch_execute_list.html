@@ -1,0 +1,257 @@
+{% extends "base.html" %}
+{% block title %}批量执行 - DBAToolbox{% endblock %}
+
+{% block content %}
+<div class="breadcrumb">运维管理 / 批量执行</div>
+
+<div class="layui-card">
+    <div class="layui-card-header"><span>批量执行任务</span></div>
+    <div class="layui-card-body">
+        <div class="layui-form layui-form-item" style="margin-bottom:10px;">
+            <div class="layui-inline">
+                <input type="text" id="search-keyword" placeholder="脚本名/创建人搜索" class="layui-input" style="width:260px;">
+            </div>
+            <button class="layui-btn" id="btn-search"><i class="layui-icon layui-icon-search"></i> 搜索</button>
+            <button class="layui-btn layui-btn-normal" id="btn-add"><i class="layui-icon layui-icon-add-1"></i> 新建任务</button>
+        </div>
+        <table id="main-table" lay-filter="main-table"></table>
+    </div>
+</div>
+
+<script type="text/html" id="action-bar">
+    <a class="layui-btn layui-btn-xs" lay-event="detail">详情</a>
+    <a class="layui-btn layui-btn-xs layui-btn-danger" lay-event="del">删除</a>
+</script>
+
+{% verbatim %}
+<script type="text/html" id="status-tpl">
+    {{# if(d.status === 'running') { }}<span style="color:#ffb800;">执行中</span>
+    {{# } else if(d.status === 'completed') { }}<span style="color:#5fb878;">已完成</span>
+    {{# } else if(d.status === 'failed') { }}<span style="color:#ff5722;">执行失败</span>
+    {{# } else { }}<span style="color:#999;">待执行</span>{{# } }}
+</script>
+{% endverbatim %}
+{% endblock %}
+
+{% block extra_script %}
+<script>
+var hosts = {{ hosts|safe }};
+var scripts = {{ scripts|safe }};
+
+function hostTextFn(d) {
+    var name = d.display_name || d.hostname;
+    return d.first_ip ? name + '(' + d.first_ip + ')' : name;
+}
+
+layui.use(['table', 'layer', 'form'], function() {
+    var table = layui.table;
+    var layer = layui.layer;
+
+    var tableIns = table.render({
+        elem: '#main-table',
+        url: '/batch-execute/api/',
+        page: true,
+        limit: 10,
+        limits: [10, 20, 50, 100],
+        cols: [[
+            {field: 'id', title: 'ID', width: 30},
+            {field: 'script__name', title: '执行脚本', width: 260},
+            {field: 'script_type__display', title: '脚本类型', width: 90},
+            {field: 'status__display', title: '任务状态', width: 90, templet: '#status-tpl'},
+            {field: 'progress', title: '执行(成功/失败/总数)', width: 160, templet: function(d) {
+                return (d.success_count || 0) + ' / ' + (d.fail_count || 0) + ' / ' + (d.total_count || 0);
+            }},
+            {field: 'creator', title: '创建人', width: 80},
+            {field: 'created_at', title: '创建时间', width: 170, templet: function(d) {
+                return d.created_at ? d.created_at.substring(0, 19).replace('T', ' ') : '';
+            }},
+            {field: 'remark', title: '备注', width: 100},
+            {title: '操作', width: 120, toolbar: '#action-bar'}
+        ]],
+        defaultToolbar: [],
+        request: {pageName: 'page', limitName: 'limit'},
+        response: {statusCode: 0, countName: 'count', dataName: 'data'},
+        parseData: function(res) {
+            return {code: res.code, msg: res.msg, count: res.count, data: res.data};
+        }
+    });
+
+    function reloadTable() {
+        tableIns.reload({where: {keyword: $('#search-keyword').val()}});
+    }
+
+    $('#btn-search').click(reloadTable);
+    $('#search-keyword').keydown(function(e) { if (e.keyCode === 13) reloadTable(); });
+
+    table.on('tool(main-table)', function(obj) {
+        if (obj.event === 'del') {
+            layer.confirm('确认删除该任务？', {icon: 3}, function(idx) {
+                $.ajax({
+                    url: '/batch-execute/api/',
+                    type: 'DELETE',
+                    contentType: 'application/json',
+                    data: JSON.stringify({id: obj.data.id}),
+                    headers: {'X-CSRFToken': getCookie('csrftoken_dbatoolbox')},
+                    success: function(r) {
+                        if (r.code === 0) { layer.msg(r.msg, {icon: 1}); layer.close(idx); reloadTable(); }
+                        else { layer.msg(r.msg, {icon: 2}); }
+                    }
+                });
+                layer.close(idx);
+            });
+        } else if (obj.event === 'detail') {
+            showDetail(obj.data.id);
+        }
+    });
+
+    $('#btn-add').click(openCreateDialog);
+
+    function openCreateDialog() {
+        var scriptOpts = '<option value="">请选择脚本</option>';
+        for (var i = 0; i < scripts.length; i++) {
+            scriptOpts += '<option value="' + scripts[i].id + '">' + scripts[i].name + ' (' + scripts[i].script_type + ')</option>';
+        }
+        var hostChecks = '';
+        for (var i = 0; i < hosts.length; i++) {
+            hostChecks += '<div style="margin:3px 0;">'
+                + '<input type="checkbox" name="host-ids" value="' + hosts[i].id + '" style="vertical-align:middle;">'
+                + ' <label style="vertical-align:middle;cursor:pointer;">' + hostTextFn(hosts[i]) + '</label>'
+                + '</div>';
+        }
+
+        var html = '<div style="padding:20px 25px 10px;">'
+            + '<div>'
+            + '<div class="layui-form-item"><label class="layui-form-label" style="width:80px;">选择脚本</label>'
+            + '<div class="layui-input-block" style="margin-left:110px;"><select id="dlg-script" lay-ignore style="width:100%;height:38px;border:1px solid #e6e6e6;border-radius:2px;padding:0 8px;">' + scriptOpts + '</select></div></div>'
+            + '<div class="layui-form-item"><label class="layui-form-label" style="width:80px;">目标主机</label>'
+            + '<div class="layui-input-block" style="margin-left:110px;max-height:260px;overflow:auto;border:1px solid #e6e6e6;border-radius:2px;padding:8px 12px;">'
+            + '<div><a href="javascript:;" id="check-all" style="font-size:12px;">全选</a> / <a href="javascript:;" id="uncheck-all" style="font-size:12px;">取消</a></div>'
+            + hostChecks + '</div></div>'
+            + '<div class="layui-form-item"><label class="layui-form-label" style="width:80px;">创建人</label>'
+            + '<div class="layui-input-block" style="margin-left:110px;"><input type="text" id="dlg-creator" class="layui-input"></div></div>'
+            + '<div class="layui-form-item"><label class="layui-form-label" style="width:80px;">备注</label>'
+            + '<div class="layui-input-block" style="margin-left:110px;"><input type="text" id="dlg-remark" class="layui-input"></div></div>'
+            + '</div></div>';
+
+        layer.open({
+            type: 1,
+            title: '新建批量执行任务',
+            area: ['700px', '520px'],
+            content: html,
+            btn: ['提交执行', '取消'],
+            yes: function(index, layero) {
+                var scriptId = $(layero).find('#dlg-script').val();
+                var checkedHosts = [];
+                $(layero).find('input[name="host-ids"]:checked').each(function() {
+                    checkedHosts.push(parseInt($(this).val()));
+                });
+                if (!scriptId) { layer.msg('请选择脚本', {icon: 2}); return; }
+                if (checkedHosts.length === 0) { layer.msg('请选择至少一台主机', {icon: 2}); return; }
+
+                var payload = {
+                    script_id: parseInt(scriptId),
+                    host_ids: checkedHosts,
+                    creator: $('#dlg-creator').val().trim(),
+                    remark: $('#dlg-remark').val().trim()
+                };
+                $.ajax({
+                    url: '/batch-execute/api/',
+                    type: 'POST',
+                    contentType: 'application/json',
+                    data: JSON.stringify(payload),
+                    headers: {'X-CSRFToken': getCookie('csrftoken_dbatoolbox')},
+                    success: function(r) {
+                        if (r.code === 0) { layer.msg(r.msg, {icon: 1}); layer.close(index); reloadTable(); }
+                        else { layer.msg(r.msg, {icon: 2}); }
+                    }
+                });
+            },
+            btn2: function(index) { layer.close(index); }
+        });
+
+        // 全选/取消
+        $(document).on('click', '#check-all', function() {
+            $('input[name="host-ids"]').prop('checked', true);
+        });
+        $(document).on('click', '#uncheck-all', function() {
+            $('input[name="host-ids"]').prop('checked', false);
+        });
+    }
+
+    // ===== 任务详情（轮询） =====
+
+    function showDetail(taskId) {
+        var pollTimer = null;
+        var detailIndex = layer.open({
+            type: 1,
+            title: '任务详情 #' + taskId,
+            area: ['1350px', '700px'],
+            content: '<div id="detail-content" style="padding:20px 25px;text-align:center;color:#999;">加载中...</div>',
+            btn: ['刷新', '关闭'],
+            yes: function(index) { fetchDetail(); },
+            btn2: function(index) {
+                if (pollTimer) clearInterval(pollTimer);
+                layer.close(index);
+            },
+            cancel: function() {
+                if (pollTimer) clearInterval(pollTimer);
+            }
+        });
+
+        function fetchDetail() {
+            $.get('/batch-execute/detail/' + taskId + '/', function(r) {
+                if (r.code !== 0) { $('#detail-content').html('<p>' + r.msg + '</p>'); return; }
+                var d = r.data;
+                function fmtTs(ts) { return ts ? ts.substring(0, 19).replace('T', ' ') : ''; }
+                var html = '<table class="layui-table" style="margin:0;"><tbody>'
+                    + '<tr><td style="width:90px;text-align:right;font-weight:bold;">执行脚本</td><td>' + d.script__name + ' (' + d.script_type__display + ')</td>'
+                    + '<td style="width:90px;text-align:right;font-weight:bold;">任务状态</td><td>' + d.status__display + '</td></tr>'
+                    + '<tr><td style="text-align:right;font-weight:bold;">进度</td><td>成功 ' + d.success_count + ' / 失败 ' + d.fail_count + ' / 共 ' + d.total_count + ' 台</td>'
+                    + '<td style="text-align:right;font-weight:bold;">创建人</td><td>' + (d.creator || '') + '</td></tr>'
+                    + '<tr><td style="text-align:right;font-weight:bold;">开始时间</td><td>' + fmtTs(d.started_at) + '</td>'
+                    + '<td style="text-align:right;font-weight:bold;">结束时间</td><td>' + fmtTs(d.finished_at) + '</td></tr>'
+                    + '</tbody></table>';
+
+                if (d.hosts && d.hosts.length > 0) {
+                    html += '<table class="layui-table" style="margin-top:10px;"><thead><tr>'
+                        + '<th style="width:80px;">主机</th><th style="width:80px;">IP</th><th style="width:60px;">状态</th>'
+                        + '<th style="width:80px;">开始时间</th><th style="width:80px;">结束时间</th><th>执行输出</th>'
+                        + '</tr></thead><tbody>';
+                    for (var i = 0; i < d.hosts.length; i++) {
+                        var h = d.hosts[i];
+                        var stColor = h.status === 'success' ? '#5fb878' : (h.status === 'failed' ? '#ff5722' : (h.status === 'running' ? '#ffb800' : '#999'));
+                        html += '<tr>'
+                            + '<td>' + h.host__display + '</td>'
+                            + '<td>' + (h.host_ip || '') + '</td>'
+                            + '<td><span style="color:' + stColor + ';">' + h.status__display + '</span></td>'
+                            + '<td>' + fmtTs(h.started_at) + '</td>'
+                            + '<td>' + fmtTs(h.finished_at) + '</td>'
+                            + '<td><pre style="margin:0;padding:4px;background:#f5f5f5;border-radius:2px;max-height:120px;overflow:auto;font-size:12px;white-space:pre-wrap;text-align:left;">' + (h.output || '') + '</pre></td>'
+                            + '</tr>';
+                    }
+                    html += '</tbody></table>';
+                }
+
+                $('#detail-content').html(html);
+
+                // running 或 pending 状态时自动轮询
+                if (d.status === 'running' || d.status === 'pending') {
+                    if (!pollTimer) {
+                        pollTimer = setInterval(fetchDetail, 2000);
+                    }
+                } else {
+                    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+                }
+            });
+        }
+
+        fetchDetail();
+    }
+
+    function getCookie(name) {
+        var r = document.cookie.match("\\b" + name + "=([^;]*)\\b");
+        return r ? r[1] : '';
+    }
+});
+</script>
+{% endblock %}

@@ -1,0 +1,182 @@
+{% extends "base.html" %}
+{% block title %}主机硬件 - DBAToolbox{% endblock %}
+
+{% block content %}
+<div class="breadcrumb">基础维护 / 主机硬件</div>
+
+<div class="layui-card">
+    <div class="layui-card-header"><span>硬件信息列表</span></div>
+    <div class="layui-card-body">
+        <div class="layui-form layui-form-item" style="margin-bottom:10px;">
+            <div class="layui-inline">
+                <input type="text" id="search-keyword" placeholder="主机名/CPU/厂商搜索" class="layui-input" style="width:260px;">
+            </div>
+            <button class="layui-btn" id="btn-search"><i class="layui-icon layui-icon-search"></i> 搜索</button>
+            <button class="layui-btn layui-btn-normal" id="btn-add"><i class="layui-icon layui-icon-add-1"></i> 添加</button>
+        </div>
+        <table id="main-table" lay-filter="main-table"></table>
+    </div>
+</div>
+
+<script type="text/html" id="action-bar">
+    <a class="layui-btn layui-btn-xs layui-btn-normal" lay-event="edit">修改</a>
+    <a class="layui-btn layui-btn-xs layui-btn-danger" lay-event="del">删除</a>
+</script>
+{% endblock %}
+
+{% block extra_script %}
+<script>
+var hosts = {{ hosts|safe }};
+
+function buildSelect(name, list, currentVal, placeholder, idField, textFn) {
+    idField = idField || 'id';
+    textFn = textFn || function(d) { return d.display_name || d.hostname || d.name; };
+    var s = '<select name="' + name + '" lay-ignore style="width:100%;height:38px;border:1px solid #e6e6e6;border-radius:2px;padding:0 8px;">'
+        + '<option value="">' + (placeholder || '请选择') + '</option>';
+    for (var i = 0; i < list.length; i++) {
+        var sel = (list[i][idField] == currentVal) ? ' selected' : '';
+        s += '<option value="' + list[i][idField] + '"' + sel + '>' + textFn(list[i]) + '</option>';
+    }
+    s += '</select>';
+    return s;
+}
+
+layui.use(['table', 'layer', 'form'], function() {
+    var table = layui.table;
+    var layer = layui.layer;
+
+    var tableIns = table.render({
+        elem: '#main-table',
+        url: '/host-hardware/api/',
+        page: true,
+        limit: 10,
+        limits: [10, 20, 50, 100],
+        cols: [[
+            {field: 'id', title: 'ID', width: 70},
+            {field: 'host__display', title: '关联主机', width: 140},
+            {field: 'cpu_model', title: 'CPU型号', width: 150},
+            {field: 'cpu_cores', title: '核心数', width: 80},
+            {field: 'memory', title: '内存', width: 80},
+            {field: 'disk', title: '磁盘', width: 100},
+            {field: 'raid', title: 'RAID', width: 70},
+            {field: 'vender', title: '厂商', width: 120},
+            {field: 'sn', title: 'SN序列号', width: 120},
+            {title: '操作', width: 120, toolbar: '#action-bar'},
+            {field: 'remark', title: '备注', width: 120}
+        ]],
+        defaultToolbar: [],
+        request: {pageName: 'page', limitName: 'limit'},
+        response: {statusCode: 0, countName: 'count', dataName: 'data'},
+        parseData: function(res) {
+            return {code: res.code, msg: res.msg, count: res.count, data: res.data};
+        }
+    });
+
+    function reloadTable() {
+        tableIns.reload({where: {keyword: $('#search-keyword').val()}});
+    }
+
+    $('#btn-search').click(reloadTable);
+    $('#search-keyword').keydown(function(e) { if (e.keyCode === 13) reloadTable(); });
+
+    table.on('tool(main-table)', function(obj) {
+        if (obj.event === 'del') {
+            layer.confirm('确认删除该硬件信息？', {icon: 3}, function(idx) {
+                $.ajax({
+                    url: '/host-hardware/api/',
+                    type: 'DELETE',
+                    contentType: 'application/json',
+                    data: JSON.stringify({id: obj.data.id}),
+                    headers: {'X-CSRFToken': getCookie('csrftoken_dbatoolbox')},
+                    success: function(r) {
+                        if (r.code === 0) { layer.msg(r.msg, {icon: 1}); reloadTable(); }
+                        else { layer.msg(r.msg, {icon: 2}); }
+                    }
+                });
+                layer.close(idx);
+            });
+        } else if (obj.event === 'edit') {
+            openForm('修改硬件信息', obj.data);
+        }
+    });
+
+    $('#btn-add').click(function() { openForm('添加硬件信息'); });
+
+    function openForm(title, data) {
+        data = data || {};
+        var html = '<div style="padding:20px 25px 10px;">'
+            + '<form class="layui-form">'
+            + '<input type="hidden" id="obj-id" value="' + (data.id || '') + '">'
+            + '<table class="layui-table" style="margin:0;"><tbody>'
+            + '<tr>'
+                + '<td style="width:12%;text-align:right;">关联主机</td><td style="width:20%;">' + buildSelect('f-host', hosts, data.host_id, '请选择主机') + '</td>'
+                + '<td style="width:12%;text-align:right;">厂商名称</td><td style="width:20%;"><input type="text" id="f-vender" class="layui-input" value="' + (data.vender || '') + '"></td>'
+                + '<td style="width:12%;text-align:right;">SN序列号</td><td style="width:23%;"><input type="text" id="f-sn" class="layui-input" value="' + (data.sn || '') + '"></td>'
+            + '</tr>'
+            + '<tr>'
+                + '<td style="text-align:right;">CPU型号</td><td><input type="text" id="f-cpu-model" class="layui-input" value="' + (data.cpu_model || '') + '"></td>'
+                + '<td style="text-align:right;">CPU核心数</td><td><input type="number" id="f-cpu-cores" class="layui-input" value="' + (data.cpu_cores || '') + '"></td>'
+                + '<td style="text-align:right;">购买日期</td><td><input type="date" id="f-purchase-date" class="layui-input" value="' + (data.purchase_date || '') + '"></td>'
+            + '</tr>'
+            + '<tr>'
+                + '<td style="text-align:right;">磁盘容量</td><td><input type="text" id="f-disk" class="layui-input" value="' + (data.disk || '') + '" placeholder="如 1TB"></td>'
+                + '<td style="text-align:right;">内存容量</td><td><input type="text" id="f-memory" class="layui-input" value="' + (data.memory || '') + '" placeholder="如 32GB"></td>'
+                + '<td style="text-align:right;">维保到期</td><td><input type="date" id="f-warranty-date" class="layui-input" value="' + (data.warranty_date || '') + '"></td>'
+            + '</tr>'
+            + '<tr>'
+                + '<td style="text-align:right;">RAID级别</td><td><input type="text" id="f-raid" class="layui-input" value="' + (data.raid || '') + '"></td>'
+                + '<td style="text-align:right;">备注</td><td colspan="3"><input type="text" id="f-remark" class="layui-input" value="' + (data.remark || '') + '"></td>'
+            + '</tr>'
+            + '<tr>'
+                + '<td style="text-align:right;">磁盘明细</td><td colspan="5"><textarea id="f-disk-detail" class="layui-textarea" style="height:60px;">' + (data.disk_detail || '') + '</textarea></td>'
+            + '</tr>'
+            + '</tbody></table></form></div>';
+
+        layer.open({
+            type: 1,
+            title: title,
+            area: ['1000px', '520px'],
+            content: html,
+            btn: ['保存', '取消'],
+            yes: function(index) {
+                var payload = {
+                    id: $('#obj-id').val(),
+                    host_id: $('select[name="f-host"]').val(),
+                    cpu_model: $('#f-cpu-model').val().trim(),
+                    cpu_cores: $('#f-cpu-cores').val() ? parseInt($('#f-cpu-cores').val()) : null,
+                    memory: $('#f-memory').val().trim(),
+                    disk: $('#f-disk').val().trim(),
+                    disk_detail: $('#f-disk-detail').val().trim(),
+                    raid: $('#f-raid').val().trim(),
+                    vender: $('#f-vender').val().trim(),
+                    sn: $('#f-sn').val().trim(),
+                    purchase_date: $('#f-purchase-date').val() || null,
+                    warranty_date: $('#f-warranty-date').val() || null,
+                    remark: $('#f-remark').val().trim()
+                };
+                if (!payload.host_id) { layer.msg('请选择关联主机', {icon: 2}); return; }
+
+                var isEdit = !!payload.id;
+                $.ajax({
+                    url: '/host-hardware/api/',
+                    type: isEdit ? 'PUT' : 'POST',
+                    contentType: 'application/json',
+                    data: JSON.stringify(payload),
+                    headers: {'X-CSRFToken': getCookie('csrftoken_dbatoolbox')},
+                    success: function(r) {
+                        if (r.code === 0) { layer.msg(r.msg, {icon: 1}); layer.close(index); reloadTable(); }
+                        else { layer.msg(r.msg, {icon: 2}); }
+                    }
+                });
+            },
+            btn2: function(index) { layer.close(index); }
+        });
+    }
+
+    function getCookie(name) {
+        var r = document.cookie.match("\\b" + name + "=([^;]*)\\b");
+        return r ? r[1] : '';
+    }
+});
+</script>
+{% endblock %}

@@ -1,0 +1,203 @@
+{% extends "base.html" %}
+{% block title %}主机域名 - DBAToolbox{% endblock %}
+
+{% block content %}
+<div class="breadcrumb">基础维护 / 主机域名</div>
+
+<div class="layui-card">
+    <div class="layui-card-header"><span>域名信息列表</span></div>
+    <div class="layui-card-body">
+        <div class="layui-form layui-form-item" style="margin-bottom:10px;">
+            <div class="layui-inline">
+                <input type="text" id="search-keyword" placeholder="域名/主机名搜索" class="layui-input" style="width:260px;">
+            </div>
+            <button class="layui-btn" id="btn-search"><i class="layui-icon layui-icon-search"></i> 搜索</button>
+            <button class="layui-btn layui-btn-normal" id="btn-add"><i class="layui-icon layui-icon-add-1"></i> 添加</button>
+        </div>
+        <table id="main-table" lay-filter="main-table"></table>
+    </div>
+</div>
+
+<script type="text/html" id="action-bar">
+    <a class="layui-btn layui-btn-xs layui-btn-normal" lay-event="edit">修改</a>
+    <a class="layui-btn layui-btn-xs layui-btn-danger" lay-event="del">删除</a>
+</script>
+
+{% verbatim %}
+<script type="text/html" id="https-tpl">
+    {{# if(d.is_https) { }}<span style="color:#5fb878;">是</span>{{# } else { }}<span style="color:#999;">否</span>{{# } }}
+</script>
+{% endverbatim %}
+{% endblock %}
+
+{% block extra_script %}
+<script>
+var hosts = {{ hosts|safe }};
+var businesses = {{ businesses|safe }};
+
+function hostTextFn(d) { return d.display_name || d.hostname; }
+
+function buildSelect(name, list, currentVal, placeholder, idField, textFn) {
+    idField = idField || 'id';
+    textFn = textFn || function(d) { return d.name || d.display_name || d.hostname; };
+    var s = '<select name="' + name + '" lay-ignore style="width:100%;height:38px;border:1px solid #e6e6e6;border-radius:2px;padding:0 8px;">'
+        + '<option value="">' + (placeholder || '请选择') + '</option>';
+    for (var i = 0; i < list.length; i++) {
+        var sel = (list[i][idField] == currentVal) ? ' selected' : '';
+        s += '<option value="' + list[i][idField] + '"' + sel + '>' + textFn(list[i]) + '</option>';
+    }
+    s += '</select>';
+    return s;
+}
+
+layui.use(['table', 'layer', 'form'], function() {
+    var table = layui.table;
+    var layer = layui.layer;
+
+    var tableIns = table.render({
+        elem: '#main-table',
+        url: '/host-domain/api/',
+        page: true,
+        limit: 10,
+        limits: [10, 20, 50, 100],
+        cols: [[
+            {field: 'id', title: 'ID', width: 40},
+            {field: 'domain_name', title: '域名', width: 300},
+            {field: 'host__display', title: '关联主机', width: 150},
+            {field: 'resolve_ip', title: '解析指向', width: 120},
+            {field: 'domain_type__display', title: '域名类型', width: 90},
+            {field: 'dns_server', title: 'DNS服务器', width: 120},
+            {title: '操作', width: 120, toolbar: '#action-bar'},
+            {field: 'status__display', title: '状态', width: 80},
+            {field: 'is_https', title: 'HTTPS', width: 80, templet: '#https-tpl'},
+            {field: 'business__name', title: '所属业务', width: 90},
+            {field: 'remark', title: '备注', width: 120}
+        ]],
+        defaultToolbar: [],
+        request: {pageName: 'page', limitName: 'limit'},
+        response: {statusCode: 0, countName: 'count', dataName: 'data'},
+        parseData: function(res) {
+            return {code: res.code, msg: res.msg, count: res.count, data: res.data};
+        }
+    });
+
+    function reloadTable() {
+        tableIns.reload({where: {keyword: $('#search-keyword').val()}});
+    }
+
+    $('#btn-search').click(reloadTable);
+    $('#search-keyword').keydown(function(e) { if (e.keyCode === 13) reloadTable(); });
+
+    table.on('tool(main-table)', function(obj) {
+        if (obj.event === 'del') {
+            layer.confirm('确认删除域名「' + obj.data.domain_name + '」？', {icon: 3}, function(idx) {
+                $.ajax({
+                    url: '/host-domain/api/',
+                    type: 'DELETE',
+                    contentType: 'application/json',
+                    data: JSON.stringify({id: obj.data.id}),
+                    headers: {'X-CSRFToken': getCookie('csrftoken_dbatoolbox')},
+                    success: function(r) {
+                        if (r.code === 0) { layer.msg(r.msg, {icon: 1}); reloadTable(); }
+                        else { layer.msg(r.msg, {icon: 2}); }
+                    }
+                });
+                layer.close(idx);
+            });
+        } else if (obj.event === 'edit') {
+            openForm('修改域名信息', obj.data);
+        }
+    });
+
+    $('#btn-add').click(function() { openForm('添加域名信息'); });
+
+    function openForm(title, data) {
+        data = data || {};
+        var html = '<div style="padding:20px 25px 10px;">'
+            + '<form class="layui-form">'
+            + '<input type="hidden" id="obj-id" value="' + (data.id || '') + '">'
+            + '<table class="layui-table" style="margin:0;"><tbody>'
+            + '<tr>'
+                + '<td style="width:14%;text-align:right;">关联主机</td><td style="width:19%;">' + buildSelect('f-host', hosts, data.host_id, '请选择主机', 'id', hostTextFn) + '</td>'
+                + '<td style="width:14%;text-align:right;">域名全称</td><td colspan="3"><input type="text" id="f-domain-name" class="layui-input" value="' + (data.domain_name || '') + '"></td>'
+            + '</tr>'
+            + '<tr>'
+                + '<td style="width:14%;text-align:right;">所属业务</td><td style="width:19%;">' + buildSelect('f-business', businesses, data.business_id, '请选择业务') + '</td>'
+                + '<td style="width:14%;text-align:right;">解析指向</td><td style="width:19%;"><input type="text" id="f-resolve-ip" class="layui-input" value="' + (data.resolve_ip || '') + '"></td>'
+                + '<td style="width:14%;text-align:right;">DNS服务商</td><td style="width:19%;"><input type="text" id="f-dns-server" class="layui-input" value="' + (data.dns_server || '') + '"></td>'
+            + '</tr>'
+            + '<tr>'
+                + '<td style="text-align:right;">负责人</td><td><input type="text" id="f-registrant" class="layui-input" value="' + (data.registrant || '') + '"></td>'
+                + '<td style="text-align:right;">域名类型</td><td><select name="f-domain-type" lay-ignore style="width:100%;height:38px;border:1px solid #e6e6e6;border-radius:2px;padding:0 8px;">'
+                + '<option value="business"' + (data.domain_type === 'business' ? ' selected' : '') + '>业务域名</option>'
+                + '<option value="admin"' + (data.domain_type === 'admin' ? ' selected' : '') + '>管理后台</option>'
+                + '<option value="test"' + (data.domain_type === 'test' ? ' selected' : '') + '>测试域名</option>'
+                + '</select></td>'
+                + '<td style="text-align:right;">域名状态</td><td><select name="f-status" lay-ignore style="width:100%;height:38px;border:1px solid #e6e6e6;border-radius:2px;padding:0 8px;">'
+                + '<option value="normal"' + (data.status === 'normal' ? ' selected' : '') + '>正常</option>'
+                + '<option value="stop"' + (data.status === 'stop' ? ' selected' : '') + '>已停用</option>'
+                + '<option value="expired"' + (data.status === 'expired' ? ' selected' : '') + '>已过期</option>'
+                + '<option value="pending"' + (data.status === 'pending' ? ' selected' : '') + '>待备案</option>'
+                + '</select></td>'
+            + '</tr>'
+            + '<tr>'
+                + '<td style="text-align:right;">启用HTTPS</td><td><select id="f-is-https" lay-ignore style="width:100%;height:38px;border:1px solid #e6e6e6;border-radius:2px;padding:0 8px;">'
+                + '<option value="1"' + (data.is_https ? ' selected' : '') + '>是</option>'
+                + '<option value="0"' + (!data.is_https ? ' selected' : '') + '>否</option>'
+                + '</select></td>'
+                + '<td style="text-align:right;">SSL到期</td><td><input type="date" id="f-ssl-expire" class="layui-input" value="' + (data.ssl_expire_time ? data.ssl_expire_time.substring(0,10) : '') + '"></td>'
+                + '<td style="text-align:right;">域名到期</td><td><input type="date" id="f-domain-expire" class="layui-input" value="' + (data.domain_expire_time ? data.domain_expire_time.substring(0,10) : '') + '"></td>'
+            + '</tr>'
+            + '<tr>'
+                + '<td style="text-align:right;">备注</td><td colspan="5"><input type="text" id="f-remark" class="layui-input" value="' + (data.remark || '') + '"></td>'
+            + '</tr>'
+            + '</tbody></table></form></div>';
+
+        layer.open({
+            type: 1,
+            title: title,
+            area: ['1000px', '450px'],
+            content: html,
+            btn: ['保存', '取消'],
+            yes: function(index) {
+                var payload = {
+                    id: $('#obj-id').val(),
+                    host_id: $('select[name="f-host"]').val(),
+                    domain_name: $('#f-domain-name').val().trim(),
+                    domain_type: $('select[name="f-domain-type"]').val(),
+                    dns_server: $('#f-dns-server').val().trim(),
+                    resolve_ip: $('#f-resolve-ip').val().trim(),
+                    status: $('select[name="f-status"]').val(),
+                    is_https: $('#f-is-https').val() === '1',
+                    ssl_expire_time: $('#f-ssl-expire').val() || null,
+                    domain_expire_time: $('#f-domain-expire').val() || null,
+                    business_id: $('select[name="f-business"]').val() || null,
+                    registrant: $('#f-registrant').val().trim(),
+                    remark: $('#f-remark').val().trim()
+                };
+                if (!payload.domain_name) { layer.msg('请填写域名', {icon: 2}); return; }
+
+                var isEdit = !!payload.id;
+                $.ajax({
+                    url: '/host-domain/api/',
+                    type: isEdit ? 'PUT' : 'POST',
+                    contentType: 'application/json',
+                    data: JSON.stringify(payload),
+                    headers: {'X-CSRFToken': getCookie('csrftoken_dbatoolbox')},
+                    success: function(r) {
+                        if (r.code === 0) { layer.msg(r.msg, {icon: 1}); layer.close(index); reloadTable(); }
+                        else { layer.msg(r.msg, {icon: 2}); }
+                    }
+                });
+            },
+            btn2: function(index) { layer.close(index); }
+        });
+    }
+
+    function getCookie(name) {
+        var r = document.cookie.match("\\b" + name + "=([^;]*)\\b");
+        return r ? r[1] : '';
+    }
+});
+</script>
+{% endblock %}

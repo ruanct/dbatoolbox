@@ -1,0 +1,310 @@
+{% extends "base.html" %}
+{% block title %}文件分发 - DBAToolbox{% endblock %}
+
+{% block content %}
+<div class="breadcrumb">运维管理 / 文件分发</div>
+
+<div class="layui-card">
+    <div class="layui-card-header"><span>文件分发任务</span></div>
+    <div class="layui-card-body">
+        <div class="layui-form layui-form-item" style="margin-bottom:10px;">
+            <div class="layui-inline">
+                <input type="text" id="search-keyword" placeholder="任务名/创建人搜索" class="layui-input" style="width:260px;">
+            </div>
+            <button class="layui-btn" id="btn-search"><i class="layui-icon layui-icon-search"></i> 搜索</button>
+            <button class="layui-btn layui-btn-normal" id="btn-add"><i class="layui-icon layui-icon-add-1"></i> 新建任务</button>
+        </div>
+        <table id="main-table" lay-filter="main-table"></table>
+    </div>
+</div>
+
+<script type="text/html" id="action-bar">
+    <a class="layui-btn layui-btn-xs" lay-event="detail">详情</a>
+    <a class="layui-btn layui-btn-xs layui-btn-danger" lay-event="del">删除</a>
+</script>
+
+{% verbatim %}
+<script type="text/html" id="status-tpl">
+    {{# if(d.status === 'running') { }}<span style="color:#ffb800;">执行中</span>
+    {{# } else if(d.status === 'completed') { }}<span style="color:#5fb878;">已完成</span>
+    {{# } else if(d.status === 'failed') { }}<span style="color:#ff5722;">执行失败</span>
+    {{# } else { }}<span style="color:#999;">待执行</span>{{# } }}
+</script>
+{% endverbatim %}
+{% endblock %}
+
+{% block extra_script %}
+<script>
+var hosts = {{ hosts|safe }};
+
+function hostTextFn(d) {
+    var name = d.display_name || d.hostname;
+    return d.first_ip ? name + '(' + d.first_ip + ')' : name;
+}
+
+layui.use(['table', 'layer', 'form', 'upload'], function() {
+    var table = layui.table;
+    var layer = layui.layer;
+
+    var tableIns = table.render({
+        elem: '#main-table',
+        url: '/file-dist/api/',
+        page: true,
+        limit: 10,
+        limits: [10, 20, 50, 100],
+        cols: [[
+            {field: 'id', title: 'ID', width: 60},
+            {field: 'name', title: '任务名称', width: 180},
+            {field: 'source_type__display', title: '来源类型', width: 100},
+            {field: 'dest_path', title: '目标路径', width: 200},
+            {field: 'status__display', title: '任务状态', width: 100, templet: '#status-tpl'},
+            {field: 'progress', title: '进度(成功/失败/总数)', width: 160, templet: function(d) {
+                return (d.success_count || 0) + ' / ' + (d.fail_count || 0) + ' / ' + (d.total_count || 0);
+            }},
+            {field: 'creator', title: '创建人', width: 90},
+            {field: 'created_at', title: '创建时间', width: 160, templet: function(d) {
+                return d.created_at ? d.created_at.substring(0, 16).replace('T', ' ') : '';
+            }},
+            {field: 'remark', title: '备注', width: 120},
+            {title: '操作', width: 130, toolbar: '#action-bar'}
+        ]],
+        defaultToolbar: [],
+        request: {pageName: 'page', limitName: 'limit'},
+        response: {statusCode: 0, countName: 'count', dataName: 'data'},
+        parseData: function(res) {
+            return {code: res.code, msg: res.msg, count: res.count, data: res.data};
+        }
+    });
+
+    function reloadTable() {
+        tableIns.reload({where: {keyword: $('#search-keyword').val()}});
+    }
+
+    $('#btn-search').click(reloadTable);
+    $('#search-keyword').keydown(function(e) { if (e.keyCode === 13) reloadTable(); });
+
+    table.on('tool(main-table)', function(obj) {
+        if (obj.event === 'del') {
+            layer.confirm('确认删除该任务？', {icon: 3}, function(idx) {
+                $.ajax({
+                    url: '/file-dist/api/',
+                    type: 'DELETE',
+                    contentType: 'application/json',
+                    data: JSON.stringify({id: obj.data.id}),
+                    headers: {'X-CSRFToken': getCookie('csrftoken_dbatoolbox')},
+                    success: function(r) {
+                        if (r.code === 0) { layer.msg(r.msg, {icon: 1}); layer.close(idx); reloadTable(); }
+                        else { layer.msg(r.msg, {icon: 2}); }
+                    }
+                });
+                layer.close(idx);
+            });
+        } else if (obj.event === 'detail') {
+            showDetail(obj.data.id);
+        }
+    });
+
+    $('#btn-add').click(openCreateDialog);
+
+    function openCreateDialog() {
+        var hostChecks = '';
+        for (var i = 0; i < hosts.length; i++) {
+            hostChecks += '<div style="margin:3px 0;">'
+                + '<input type="checkbox" name="host-ids" value="' + hosts[i].id + '" style="vertical-align:middle;">'
+                + ' <label style="vertical-align:middle;cursor:pointer;">' + hostTextFn(hosts[i]) + '</label>'
+                + '</div>';
+        }
+
+        var html = '<div style="padding:20px 25px 10px;">'
+            // 来源类型
+            + '<div class="layui-form-item"><label class="layui-form-label" style="width:80px;">任务名称</label>'
+            + '<div class="layui-input-block" style="margin-left:110px;"><input type="text" id="dlg-name" class="layui-input" placeholder="请输入任务名称"></div></div>'
+            + '<div class="layui-form-item"><label class="layui-form-label" style="width:80px;">来源类型</label>'
+            + '<div class="layui-input-block" style="margin-left:110px;">'
+            + '<select id="dlg-source-type" lay-ignore style="width:100%;height:38px;border:1px solid #e6e6e6;border-radius:2px;padding:0 8px;">'
+            + '<option value="local">本地上传</option><option value="remote">远程主机</option></select></div></div>'
+            // 本地上传区域
+            + '<div id="sec-local" class="layui-form-item"><label class="layui-form-label" style="width:80px;">上传文件</label>'
+            + '<div class="layui-input-block" style="margin-left:110px;">'
+            + '<input type="file" id="dlg-local-file" name="local_file" style="padding-top:6px;"></div></div>'
+            // 远程源区域
+            + '<div id="sec-remote" class="layui-form-item" style="display:none;"><label class="layui-form-label" style="width:80px;">源主机</label>'
+            + '<div class="layui-input-block" style="margin-left:110px;"><select id="dlg-source-host" lay-ignore style="width:100%;height:38px;border:1px solid #e6e6e6;border-radius:2px;padding:0 8px;">'
+            + '<option value="">请选择源主机</option>';
+        for (var i = 0; i < hosts.length; i++) {
+            html += '<option value="' + hosts[i].id + '">' + hostTextFn(hosts[i]) + '</option>';
+        }
+        html += '</select></div></div>'
+            + '<div id="sec-remote-path" class="layui-form-item" style="display:none;"><label class="layui-form-label" style="width:80px;">源文件路径</label>'
+            + '<div class="layui-input-block" style="margin-left:110px;"><input type="text" id="dlg-source-path" class="layui-input" placeholder="如 /opt/app/nginx.tar.gz"></div></div>'
+            // 目标主机
+            + '<div class="layui-form-item"><label class="layui-form-label" style="width:80px;">目标主机</label>'
+            + '<div class="layui-input-block" style="margin-left:110px;max-height:200px;overflow:auto;border:1px solid #e6e6e6;border-radius:2px;padding:8px 12px;">'
+            + '<div><a href="javascript:;" id="check-all" style="font-size:12px;">全选</a> / <a href="javascript:;" id="uncheck-all" style="font-size:12px;">取消</a></div>'
+            + hostChecks + '</div></div>'
+            // 目标路径
+            + '<div class="layui-form-item"><label class="layui-form-label" style="width:80px;">目标路径</label>'
+            + '<div class="layui-input-block" style="margin-left:110px;"><input type="text" id="dlg-dest-path" class="layui-input" placeholder="如 /opt/software/" value="/opt/software/"></div></div>'
+            + '<div class="layui-form-item"><label class="layui-form-label" style="width:80px;">文件属主</label>'
+            + '<div class="layui-input-block" style="margin-left:110px;"><input type="text" id="dlg-owner" class="layui-input" value="root"></div></div>'
+            + '<div class="layui-form-item"><label class="layui-form-label" style="width:80px;">文件属组</label>'
+            + '<div class="layui-input-block" style="margin-left:110px;"><input type="text" id="dlg-group" class="layui-input" value="root"></div></div>'
+            + '<div class="layui-form-item"><label class="layui-form-label" style="width:80px;">文件权限</label>'
+            + '<div class="layui-input-block" style="margin-left:110px;"><input type="text" id="dlg-mode" class="layui-input" value="0644"></div></div>'
+            + '<div class="layui-form-item"><label class="layui-form-label" style="width:80px;">备份已有</label>'
+            + '<div class="layui-input-block" style="margin-left:110px;padding-top:8px;">'
+            + '<input type="checkbox" id="dlg-backup" value="1" style="vertical-align:middle;"> <label style="vertical-align:middle;">覆盖前先备份目标文件</label></div></div>'
+            + '<div class="layui-form-item"><label class="layui-form-label" style="width:80px;">创建人</label>'
+            + '<div class="layui-input-block" style="margin-left:110px;"><input type="text" id="dlg-creator" class="layui-input"></div></div>'
+            + '<div class="layui-form-item"><label class="layui-form-label" style="width:80px;">备注</label>'
+            + '<div class="layui-input-block" style="margin-left:110px;"><input type="text" id="dlg-remark" class="layui-input"></div></div>'
+            + '</div>';
+
+        layer.open({
+            type: 1,
+            title: '新建文件分发任务',
+            area: ['750px', '620px'],
+            content: html,
+            btn: ['提交执行', '取消'],
+            yes: function(index, layero) {
+                var name = $(layero).find('#dlg-name').val().trim();
+                var sourceType = $(layero).find('#dlg-source-type').val();
+                var destPath = $(layero).find('#dlg-dest-path').val().trim();
+                var checkedHosts = [];
+                $(layero).find('input[name="host-ids"]:checked').each(function() {
+                    checkedHosts.push($(this).val());
+                });
+
+                if (!name) { layer.msg('请输入任务名称', {icon: 2}); return; }
+                if (checkedHosts.length === 0) { layer.msg('请选择至少一台主机', {icon: 2}); return; }
+                if (!destPath) { layer.msg('请输入目标路径', {icon: 2}); return; }
+
+                var fd = new FormData();
+                fd.append('name', name);
+                fd.append('source_type', sourceType);
+                fd.append('host_ids', checkedHosts.join(','));
+                fd.append('dest_path', destPath);
+                fd.append('dest_owner', $(layero).find('#dlg-owner').val().trim() || 'root');
+                fd.append('dest_group', $(layero).find('#dlg-group').val().trim() || 'root');
+                fd.append('dest_mode', $(layero).find('#dlg-mode').val().trim() || '0644');
+                fd.append('backup', $(layero).find('#dlg-backup').is(':checked') ? '1' : '0');
+                fd.append('creator', $(layero).find('#dlg-creator').val().trim());
+                fd.append('remark', $(layero).find('#dlg-remark').val().trim());
+
+                if (sourceType === 'local') {
+                    var fileInput = $(layero).find('#dlg-local-file')[0];
+                    if (!fileInput.files.length) { layer.msg('请选择上传文件', {icon: 2}); return; }
+                    fd.append('local_file', fileInput.files[0]);
+                } else {
+                    var srcHostId = $(layero).find('#dlg-source-host').val();
+                    var srcPath = $(layero).find('#dlg-source-path').val().trim();
+                    if (!srcHostId || !srcPath) { layer.msg('远程来源需选择源主机并填写源路径', {icon: 2}); return; }
+                    fd.append('source_host_id', srcHostId);
+                    fd.append('source_path', srcPath);
+                }
+
+                $.ajax({
+                    url: '/file-dist/api/',
+                    type: 'POST',
+                    data: fd,
+                    processData: false,
+                    contentType: false,
+                    headers: {'X-CSRFToken': getCookie('csrftoken_dbatoolbox')},
+                    success: function(r) {
+                        if (r.code === 0) { layer.msg(r.msg, {icon: 1}); layer.close(index); reloadTable(); }
+                        else { layer.msg(r.msg, {icon: 2}); }
+                    }
+                });
+            },
+            btn2: function(index) { layer.close(index); }
+        });
+
+        // 来源类型切换
+        $(document).on('change', '#dlg-source-type', function() {
+            var v = $(this).val();
+            $('#sec-local, #sec-remote, #sec-remote-path').hide();
+            if (v === 'local') { $('#sec-local').show(); }
+            else { $('#sec-remote, #sec-remote-path').show(); }
+        });
+
+        // 全选/取消
+        $(document).on('click', '#check-all', function() {
+            $('input[name="host-ids"]').prop('checked', true);
+        });
+        $(document).on('click', '#uncheck-all', function() {
+            $('input[name="host-ids"]').prop('checked', false);
+        });
+    }
+
+    // ===== 任务详情（轮询） =====
+    function showDetail(taskId) {
+        var pollTimer = null;
+        var detailIndex = layer.open({
+            type: 1,
+            title: '任务详情 #' + taskId,
+            area: ['1000px', '600px'],
+            content: '<div id="detail-content" style="padding:20px 25px;text-align:center;color:#999;">加载中...</div>',
+            btn: ['刷新', '关闭'],
+            yes: function(index) { fetchDetail(); },
+            btn2: function(index) {
+                if (pollTimer) clearInterval(pollTimer);
+                layer.close(index);
+            },
+            cancel: function() {
+                if (pollTimer) clearInterval(pollTimer);
+            }
+        });
+
+        function fetchDetail() {
+            $.get('/file-dist/detail/' + taskId + '/', function(r) {
+                if (r.code !== 0) { $('#detail-content').html('<p>' + r.msg + '</p>'); return; }
+                var d = r.data;
+                var html = '<table class="layui-table" style="margin:0;"><tbody>'
+                    + '<tr><td style="width:90px;text-align:right;font-weight:bold;">任务名称</td><td>' + d.name + '</td>'
+                    + '<td style="width:90px;text-align:right;font-weight:bold;">来源类型</td><td>' + d.source_type__display + '</td></tr>'
+                    + '<tr><td style="text-align:right;font-weight:bold;">目标路径</td><td>' + d.dest_path + '</td>'
+                    + '<td style="text-align:right;font-weight:bold;">任务状态</td><td>' + d.status__display + '</td></tr>'
+                    + '<tr><td style="text-align:right;font-weight:bold;">进度</td><td>成功 ' + d.success_count + ' / 失败 ' + d.fail_count + ' / 共 ' + d.total_count + ' 台</td>'
+                    + '<td style="text-align:right;font-weight:bold;">创建人</td><td>' + (d.creator || '') + '</td></tr>'
+                    + (d.source_host__display ? '<tr><td style="text-align:right;font-weight:bold;">源主机</td><td>' + d.source_host__display + '</td>'
+                    + '<td style="text-align:right;font-weight:bold;">远程源路径</td><td>' + (d.source_path || '') + '</td></tr>' : '')
+                    + '</tbody></table>';
+
+                if (d.hosts && d.hosts.length > 0) {
+                    html += '<table class="layui-table" style="margin-top:10px;"><thead><tr>'
+                        + '<th style="width:120px;">主机</th><th style="width:80px;">状态</th><th>执行输出</th>'
+                        + '</tr></thead><tbody>';
+                    for (var i = 0; i < d.hosts.length; i++) {
+                        var h = d.hosts[i];
+                        var stColor = h.status === 'success' ? '#5fb878' : (h.status === 'failed' ? '#ff5722' : (h.status === 'running' ? '#ffb800' : '#999'));
+                        html += '<tr>'
+                            + '<td>' + h.host__display + '</td>'
+                            + '<td><span style="color:' + stColor + ';">' + h.status__display + '</span></td>'
+                            + '<td><pre style="margin:0;padding:4px;background:#f5f5f5;border-radius:2px;max-height:120px;overflow:auto;font-size:12px;white-space:pre-wrap;">' + (h.output || '') + '</pre></td>'
+                            + '</tr>';
+                    }
+                    html += '</tbody></table>';
+                }
+
+                $('#detail-content').html(html);
+
+                if (d.status === 'running' || d.status === 'pending') {
+                    if (!pollTimer) {
+                        pollTimer = setInterval(fetchDetail, 2000);
+                    }
+                } else {
+                    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+                }
+            });
+        }
+
+        fetchDetail();
+    }
+
+    function getCookie(name) {
+        var r = document.cookie.match("\\b" + name + "=([^;]*)\\b");
+        return r ? r[1] : '';
+    }
+});
+</script>
+{% endblock %}

@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+{% block title %}脚本分类 - DBAToolbox{% endblock %}
+
+{% block content %}
+<div class="breadcrumb">运维管理 / 脚本分类</div>
+
+<div class="layui-card">
+    <div class="layui-card-header"><span>脚本分类列表</span></div>
+    <div class="layui-card-body">
+        <div class="layui-form layui-form-item" style="margin-bottom:10px;">
+            <div class="layui-inline">
+                <input type="text" id="search-keyword" placeholder="分类名称搜索" class="layui-input" style="width:260px;">
+            </div>
+            <button class="layui-btn" id="btn-search"><i class="layui-icon layui-icon-search"></i> 搜索</button>
+            <button class="layui-btn layui-btn-normal" id="btn-add"><i class="layui-icon layui-icon-add-1"></i> 添加</button>
+        </div>
+        <table id="main-table" lay-filter="main-table"></table>
+    </div>
+</div>
+
+<script type="text/html" id="action-bar">
+    <a class="layui-btn layui-btn-xs layui-btn-normal" lay-event="edit">修改</a>
+    <a class="layui-btn layui-btn-xs layui-btn-danger" lay-event="del">删除</a>
+</script>
+{% endblock %}
+
+{% block extra_script %}
+<script>
+var categoriesTree = {{ categories_tree|safe }};
+
+function buildParentSelect(currentVal) {
+    var s = '<select id="f-parent-id" lay-ignore style="width:100%;height:38px;border:1px solid #e6e6e6;border-radius:2px;padding:0 8px;">'
+        + '<option value="">无（顶级分类）</option>';
+    for (var i = 0; i < categoriesTree.length; i++) {
+        var cat = categoriesTree[i];
+        var sel = (cat.id == currentVal) ? ' selected' : '';
+        s += '<option value="' + cat.id + '"' + sel + '>' + cat.display + '</option>';
+    }
+    s += '</select>';
+    return s;
+}
+
+layui.use(['table', 'layer', 'form'], function() {
+    var table = layui.table;
+    var layer = layui.layer;
+
+    var tableIns = table.render({
+        elem: '#main-table',
+        url: '/script-category/api/',
+        page: true,
+        limit: 20,
+        limits: [10, 20, 50, 100],
+        cols: [[
+            {field: 'id', title: 'ID', width: 60},
+            {field: 'name', title: '分类名称', width: 180},
+            {field: 'parent__name', title: '上级分类', width: 150},
+            {field: 'sort_order', title: '排序', width: 80},
+            {field: 'remark', title: '备注', width: 200},
+            {title: '操作', width: 130, toolbar: '#action-bar'}
+        ]],
+        defaultToolbar: [],
+        request: {pageName: 'page', limitName: 'limit'},
+        response: {statusCode: 0, countName: 'count', dataName: 'data'},
+        parseData: function(res) {
+            return {code: res.code, msg: res.msg, count: res.count, data: res.data};
+        }
+    });
+
+    function reloadTable() {
+        tableIns.reload({where: {keyword: $('#search-keyword').val()}});
+    }
+
+    $('#btn-search').click(reloadTable);
+    $('#search-keyword').keydown(function(e) { if (e.keyCode === 13) reloadTable(); });
+
+    table.on('tool(main-table)', function(obj) {
+        if (obj.event === 'del') {
+            layer.confirm('确认删除分类「' + obj.data.name + '」？<br><span style="color:#999;">子分类将被一并删除</span>', {icon: 3}, function(idx) {
+                $.ajax({
+                    url: '/script-category/api/',
+                    type: 'DELETE',
+                    contentType: 'application/json',
+                    data: JSON.stringify({id: obj.data.id}),
+                    headers: {'X-CSRFToken': getCookie('csrftoken_dbatoolbox')},
+                    success: function(r) {
+                        if (r.code === 0) { layer.msg(r.msg, {icon: 1}); layer.close(idx); location.reload(); }
+                        else { layer.msg(r.msg, {icon: 2}); }
+                    }
+                });
+                layer.close(idx);
+            });
+        } else if (obj.event === 'edit') {
+            openForm('修改脚本分类', obj.data);
+        }
+    });
+
+    $('#btn-add').click(function() { openForm('添加脚本分类'); });
+
+    function openForm(title, data) {
+        data = data || {};
+        var html = '<div style="padding:20px 25px 10px;">'
+            + '<form class="layui-form">'
+            + '<input type="hidden" id="obj-id" value="' + (data.id || '') + '">'
+            + '<table class="layui-table" style="margin:0;"><tbody>'
+            + '<tr>'
+                + '<td style="width:18%;text-align:right;">分类名称</td><td style="width:32%;"><input type="text" id="f-name" class="layui-input" value="' + (data.name || '') + '"></td>'
+                + '<td style="width:18%;text-align:right;">上级分类</td><td style="width:32%;">' + buildParentSelect(data.parent_id) + '</td>'
+            + '</tr>'
+            + '<tr>'
+                + '<td style="text-align:right;">排序</td><td><input type="number" id="f-sort-order" class="layui-input" value="' + (data.sort_order || 0) + '"></td>'
+                + '<td style="text-align:right;">备注</td><td><input type="text" id="f-remark" class="layui-input" value="' + (data.remark || '') + '"></td>'
+            + '</tr>'
+            + '</tbody></table></form></div>';
+
+        layer.open({
+            type: 1,
+            title: title,
+            area: ['650px', '280px'],
+            content: html,
+            btn: ['保存', '取消'],
+            yes: function(index, layero) {
+                // 刷新 parent select 获取最新值
+                var parentVal = $(layero).find('#f-parent-id').val();
+                var payload = {
+                    id: $('#obj-id').val(),
+                    name: $('#f-name').val().trim(),
+                    parent_id: parentVal || null,
+                    sort_order: parseInt($('#f-sort-order').val()) || 0,
+                    remark: $('#f-remark').val().trim()
+                };
+                if (!payload.name) { layer.msg('请填写分类名称', {icon: 2}); return; }
+
+                var isEdit = !!payload.id;
+                $.ajax({
+                    url: '/script-category/api/',
+                    type: isEdit ? 'PUT' : 'POST',
+                    contentType: 'application/json',
+                    data: JSON.stringify(payload),
+                    headers: {'X-CSRFToken': getCookie('csrftoken_dbatoolbox')},
+                    success: function(r) {
+                        if (r.code === 0) { layer.msg(r.msg, {icon: 1}); layer.close(index); location.reload(); }
+                        else { layer.msg(r.msg, {icon: 2}); }
+                    }
+                });
+            },
+            btn2: function(index) { layer.close(index); }
+        });
+    }
+
+    function getCookie(name) {
+        var r = document.cookie.match("\\b" + name + "=([^;]*)\\b");
+        return r ? r[1] : '';
+    }
+});
+</script>
+{% endblock %}

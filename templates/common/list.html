@@ -1,0 +1,223 @@
+{% extends "base.html" %}
+
+{% block title %}{{ model_name }} - DBAToolbox{% endblock %}
+
+{% block content %}
+<div class="breadcrumb">通用配置 / {{ model_name }}</div>
+
+<div class="layui-card">
+    <div class="layui-card-header">
+        <span>{{ model_name }}列表</span>
+    </div>
+    <div class="layui-card-body">
+        <div class="layui-form layui-form-item" style="margin-bottom:10px;">
+            <div class="layui-inline">
+                <input type="text" id="search-keyword" placeholder="请输入名称搜索" autocomplete="off" class="layui-input" style="width:220px;">
+            </div>
+            <button class="layui-btn" id="btn-search"><i class="layui-icon layui-icon-search"></i> 搜索</button>
+            <button class="layui-btn layui-btn-normal" id="btn-add"><i class="layui-icon layui-icon-add-1"></i> 添加</button>
+        </div>
+
+        <table id="data-table" lay-filter="data-table"></table>
+    </div>
+</div>
+
+<script type="text/html" id="toolbar-action">
+    <a class="layui-btn layui-btn-xs layui-btn-normal" lay-event="edit">编辑</a>
+    <a class="layui-btn layui-btn-xs layui-btn-danger" lay-event="del">删除</a>
+</script>
+
+{% endblock %}
+
+{% block extra_script %}
+<script>
+var modelKey = "{{ model_key }}";
+var apiUrl = "/" + modelKey + "/api/";
+var choices = {{ choices_json|safe|default:"null" }};
+
+layui.use(['table', 'layer', 'form'], function() {
+    var table = layui.table;
+    var layer = layui.layer;
+    var form = layui.form;
+
+    function buildCols() {
+        var cols = [[
+            {field: 'id', title: 'ID', width: 100}
+        ]];
+        if (choices) {
+            cols[0].push({field: 'code', title: '编码', width: 120});
+        }
+        cols[0].push({field: 'name', title: '名称'});
+        cols[0].push({title: '操作', width: 180, toolbar: '#toolbar-action'});
+        return cols;
+    }
+
+    var tableIns = table.render({
+        elem: '#data-table',
+        url: apiUrl,
+        page: true,
+        limit: 10,
+        limits: [10, 20, 50, 100],
+        cols: buildCols(),
+        defaultToolbar: [],
+        request: {pageName: 'page', limitName: 'limit'},
+        response: {statusCode: 0, countName: 'count', dataName: 'data'},
+        parseData: function(res) {
+            return {code: res.code, msg: res.msg, count: res.count, data: res.data};
+        }
+    });
+
+    function reloadTable() {
+        tableIns.reload({
+            where: {keyword: $('#search-keyword').val()},
+            page: {curr: 1}
+        });
+    }
+
+    $('#btn-search').click(function() { reloadTable(); });
+
+    $('#search-keyword').keydown(function(e) {
+        if (e.keyCode === 13) reloadTable();
+    });
+
+    function buildFormHtml(data) {
+        var idVal = data ? data.id : '';
+        var nameField;
+        if (choices) {
+            var codeVal = data ? data.code : '';
+            nameField = '<select name="code" lay-ignore style="width:100%;height:38px;border:1px solid #e6e6e6;border-radius:2px;padding:0 10px;">'
+                + '<option value="">请选择</option>';
+            for (var i = 0; i < choices.length; i++) {
+                var sel = (choices[i].value === codeVal) ? ' selected' : '';
+                nameField += '<option value="' + choices[i].value + '"' + sel + '>' + choices[i].label + '</option>';
+            }
+            nameField += '</select>';
+        } else {
+            var nameVal = data ? data.name : '';
+            nameField = '<input type="text" name="name" lay-verify="required" placeholder="请输入名称" autocomplete="off" class="layui-input" value="' + nameVal + '">';
+        }
+        return '<div style="padding:25px 30px 0 0;">'
+            + '<form class="layui-form" lay-filter="edit-form">'
+            + '<input type="hidden" name="id" value="' + idVal + '">'
+            + '<div class="layui-form-item">'
+            + '<label class="layui-form-label">名称</label>'
+            + '<div class="layui-input-block">' + nameField + '</div>'
+            + '</div></form></div>';
+    }
+
+    function openForm(title, data, callback) {
+        var contentHtml = buildFormHtml(data);
+        layer.open({
+            type: 1,
+            title: title,
+            area: ['450px', '220px'],
+            content: contentHtml,
+            btn: ['确定', '取消'],
+            yes: function(index, layero) {
+                var formData;
+                if (choices) {
+                    var codeVal = $(layero).find('select[name="code"]').val();
+                    if (!codeVal) {
+                        layer.msg('请选择', {icon: 2});
+                        return;
+                    }
+                    var nameVal = '';
+                    for (var i = 0; i < choices.length; i++) {
+                        if (choices[i].value === codeVal) {
+                            nameVal = choices[i].label;
+                            break;
+                        }
+                    }
+                    formData = {code: codeVal, name: nameVal};
+                } else {
+                    var nameVal = $(layero).find('input[name="name"]').val().trim();
+                    if (!nameVal) {
+                        layer.msg('请输入名称', {icon: 2});
+                        return;
+                    }
+                    formData = {name: nameVal};
+                }
+                callback(formData, index, layero);
+            },
+            btn2: function(index) { layer.close(index); },
+            success: function(layero) {
+                if (!choices) {
+                    form.render(null, 'edit-form');
+                }
+            }
+        });
+    }
+
+    $('#btn-add').click(function() {
+        openForm('添加{{ model_name }}', null, function(formData, index, layero) {
+            $.ajax({
+                url: apiUrl,
+                type: 'POST',
+                contentType: 'application/json',
+                data: JSON.stringify(formData),
+                headers: {'X-CSRFToken': getCookie('csrftoken_dbatoolbox')},
+                success: function(res) {
+                    if (res.code === 0) {
+                        layer.msg(res.msg, {icon: 1});
+                        layer.close(index);
+                        reloadTable();
+                    } else {
+                        layer.msg(res.msg, {icon: 2});
+                    }
+                }
+            });
+        });
+    });
+
+    table.on('tool(data-table)', function(obj) {
+        var data = obj.data;
+        if (obj.event === 'edit') {
+            openForm('编辑{{ model_name }}', data, function(formData, index, layero) {
+                var idVal = $(layero).find('input[name="id"]').val();
+                formData.id = parseInt(idVal);
+                $.ajax({
+                    url: apiUrl,
+                    type: 'PUT',
+                    contentType: 'application/json',
+                    data: JSON.stringify(formData),
+                    headers: {'X-CSRFToken': getCookie('csrftoken_dbatoolbox')},
+                    success: function(res) {
+                        if (res.code === 0) {
+                            layer.msg(res.msg, {icon: 1});
+                            layer.close(index);
+                            reloadTable();
+                        } else {
+                            layer.msg(res.msg, {icon: 2});
+                        }
+                    }
+                });
+            });
+        } else if (obj.event === 'del') {
+            layer.confirm('确认删除「' + data.name + '」？', {icon: 3}, function(index) {
+                $.ajax({
+                    url: apiUrl,
+                    type: 'DELETE',
+                    contentType: 'application/json',
+                    data: JSON.stringify({id: data.id}),
+                    headers: {'X-CSRFToken': getCookie('csrftoken_dbatoolbox')},
+                    success: function(res) {
+                        if (res.code === 0) {
+                            layer.msg(res.msg, {icon: 1});
+                            reloadTable();
+                        } else {
+                            layer.msg(res.msg, {icon: 2});
+                        }
+                    }
+                });
+                layer.close(index);
+            });
+        }
+    });
+
+    function getCookie(name) {
+        var r = document.cookie.match("\\b" + name + "=([^;]*)\\b");
+        return r ? r[1] : '';
+    }
+});
+</script>
+{% endblock %}

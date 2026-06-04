@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ host_display }} - WebSSH</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-web-links@0.9.0/lib/xterm-addon-web-links.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body { height: 100%; background: #1e1e1e; color: #ccc; font-family: monospace; }
+        #header {
+            height: 36px; line-height: 36px; padding: 0 12px;
+            background: #2d2d2d; border-bottom: 1px solid #444;
+            display: flex; align-items: center; justify-content: space-between;
+            font-size: 13px;
+        }
+        #header .info { display: flex; gap: 16px; align-items: center; }
+        #header .info .host { color: #5fb878; font-weight: bold; }
+        #header .status { font-size: 12px; }
+        #header .status.ok { color: #5fb878; }
+        #header .status.err { color: #ff5722; }
+        #header .status.wait { color: #ffb800; }
+        #header a { color: #ff5722; text-decoration: none; cursor: pointer; font-size: 12px; }
+        #terminal { height: calc(100% - 36px); }
+        .xterm .xterm-viewport { scrollbar-width: thin; scrollbar-color: #555 #1e1e1e; }
+    </style>
+</head>
+<body>
+<div id="header">
+    <div class="info">
+        <span class="host">{{ host_display }}</span>
+        <span>{{ hostname }}</span>
+        <span>({{ ip }}:{{ user }})</span>
+    </div>
+    <div>
+        <span id="status" class="status wait">连接中...</span>
+        <a onclick="window.close()" style="margin-left:12px;">断开</a>
+    </div>
+</div>
+<div id="terminal"></div>
+
+<script>
+(function() {
+    var term = new Terminal({
+        cursorBlink: true,
+        fontSize: 14,
+        fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+        theme: {
+            background: '#1e1e1e',
+            foreground: '#d4d4d4',
+            cursor: '#ffffff',
+            selectionBackground: '#264f78',
+        },
+        allowProposedApi: true,
+    });
+
+    var fitAddon = new FitAddon.FitAddon();
+    var webLinksAddon = new WebLinksAddon.WebLinksAddon();
+
+    term.loadAddon(fitAddon);
+    term.loadAddon(webLinksAddon);
+    term.open(document.getElementById('terminal'));
+    fitAddon.fit();
+
+    var statusEl = document.getElementById('status');
+
+    function setStatus(text, cls) {
+        statusEl.textContent = text;
+        statusEl.className = 'status ' + cls;
+    }
+
+    // 建立 WebSocket 连接
+    var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    var wsUrl = proto + '//' + location.host + '/ws/terminal/{{ host_id }}/';
+    var ws = new WebSocket(wsUrl);
+    ws.binaryType = 'arraybuffer';
+
+    ws.onopen = function() {
+        setStatus('已连接', 'ok');
+    };
+
+    ws.onmessage = function(evt) {
+        if (typeof evt.data === 'string') {
+            try {
+                var msg = JSON.parse(evt.data);
+                if (msg.type === 'connected') {
+                    setStatus('已连接', 'ok');
+                    fitAddon.fit();
+                    // 发送初始尺寸
+                    ws.send(JSON.stringify({
+                        type: 'resize',
+                        cols: term.cols,
+                        rows: term.rows,
+                    }));
+                } else if (msg.type === 'disconnected') {
+                    setStatus('连接已断开', 'err');
+                    term.write('\r\n\x1b[31m[连接已断开]\x1b[0m\r\n');
+                } else if (msg.type === 'error') {
+                    setStatus(msg.message, 'err');
+                    term.write('\r\n\x1b[31m[' + msg.message + ']\x1b[0m\r\n');
+                }
+            } catch(e) {}
+        } else {
+            // 二进制数据 → 终端输出
+            term.write(new Uint8Array(evt.data));
+        }
+    };
+
+    ws.onclose = function() {
+        setStatus('已断开', 'err');
+        term.write('\r\n\x1b[31m[WebSocket 已断开]\x1b[0m\r\n');
+    };
+
+    ws.onerror = function() {
+        setStatus('连接失败', 'err');
+    };
+
+    // 用户键盘输入 → WebSocket
+    term.onData(function(data) {
+        if (ws.readyState === WebSocket.OPEN) {
+            ws.send(data);
+        }
+    });
+
+    // 窗口大小变化 → 通知 SSH 远端
+    var resizeTimer = null;
+    function doResize() {
+        fitAddon.fit();
+        if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+                type: 'resize',
+                cols: term.cols,
+                rows: term.rows,
+            }));
+        }
+    }
+
+    window.addEventListener('resize', function() {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(doResize, 100);
+    });
+
+    // 页面关闭时断开
+    window.addEventListener('beforeunload', function() {
+        if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({type: 'disconnect'}));
+        }
+    });
+})();
+</script>
+</body>
+</html>

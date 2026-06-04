@@ -1,0 +1,205 @@
+{% extends "base.html" %}
+{% block title %}虚拟机实例 - DBAToolbox{% endblock %}
+
+{% block content %}
+<div class="breadcrumb">基础维护 / 虚拟机实例</div>
+
+<div class="layui-card">
+    <div class="layui-card-header"><span>虚拟机实例列表</span></div>
+    <div class="layui-card-body">
+        <div class="layui-form layui-form-item" style="margin-bottom:10px;">
+            <div class="layui-inline">
+                <input type="text" id="search-keyword" placeholder="主机名/UUID/资源池搜索" class="layui-input" style="width:260px;">
+            </div>
+            <button class="layui-btn" id="btn-search"><i class="layui-icon layui-icon-search"></i> 搜索</button>
+            <button class="layui-btn layui-btn-normal" id="btn-add"><i class="layui-icon layui-icon-add-1"></i> 添加</button>
+        </div>
+        <table id="main-table" lay-filter="main-table"></table>
+    </div>
+</div>
+
+<script type="text/html" id="action-bar">
+    <a class="layui-btn layui-btn-xs layui-btn-normal" lay-event="edit">修改</a>
+    <a class="layui-btn layui-btn-xs layui-btn-danger" lay-event="del">删除</a>
+</script>
+
+{% verbatim %}
+<script type="text/html" id="bool-tpl">
+    {{# if(d.auto_start) { }}<span style="color:#5fb878;">是</span>{{# } else { }}<span style="color:#999;">否</span>{{# } }}
+</script>
+{% endverbatim %}
+{% endblock %}
+
+{% block extra_script %}
+<script>
+var hosts = {{ hosts|safe }};
+
+function hostTextFn(d) { return d.display_name || d.hostname; }
+
+function buildSelect(name, list, currentVal, placeholder, idField, textFn) {
+    idField = idField || 'id';
+    textFn = textFn || function(d) { return d.name || d.display_name || d.hostname; };
+    var s = '<select name="' + name + '" lay-ignore style="width:100%;height:38px;border:1px solid #e6e6e6;border-radius:2px;padding:0 8px;">'
+        + '<option value="">' + (placeholder || '请选择') + '</option>';
+    for (var i = 0; i < list.length; i++) {
+        var sel = (list[i][idField] == currentVal) ? ' selected' : '';
+        s += '<option value="' + list[i][idField] + '"' + sel + '>' + textFn(list[i]) + '</option>';
+    }
+    s += '</select>';
+    return s;
+}
+
+layui.use(['table', 'layer', 'form'], function() {
+    var table = layui.table;
+    var layer = layui.layer;
+
+    var tableIns = table.render({
+        elem: '#main-table',
+        url: '/vm-instance/api/',
+        page: true,
+        limit: 10,
+        limits: [10, 20, 50, 100],
+        cols: [[
+            {field: 'id', title: 'ID', width: 70},
+            {field: 'host__display', title: '关联主机(虚拟机)', width: 150},
+            {field: 'vm_ip', title: '虚拟机IP', width: 130},
+            {field: 'virt_platform__display', title: '虚拟化平台', width: 110},
+            {field: 'parent_host__display', title: '归属宿主机', width: 130},
+            {field: 'parent_host_ip', title: '宿主机IP', width: 130},
+            {field: 'resource_pool', title: '资源池', width: 100},
+            {field: 'auto_start', title: '开机自启', width: 90, templet: '#bool-tpl'},
+            {title: '操作', width: 120, toolbar: '#action-bar'},
+            {field: 'remark', title: '备注', width: 120},
+            {field: 'cpu_quota', title: 'CPU配额', width: 90},
+            {field: 'mem_quota', title: '内存配额', width: 90},
+            {field: 'disk_quota', title: '磁盘配额', width: 90}
+        ]],
+        defaultToolbar: [],
+        request: {pageName: 'page', limitName: 'limit'},
+        response: {statusCode: 0, countName: 'count', dataName: 'data'},
+        parseData: function(res) {
+            return {code: res.code, msg: res.msg, count: res.count, data: res.data};
+        }
+    });
+
+    function reloadTable() {
+        tableIns.reload({where: {keyword: $('#search-keyword').val()}});
+    }
+
+    $('#btn-search').click(reloadTable);
+    $('#search-keyword').keydown(function(e) { if (e.keyCode === 13) reloadTable(); });
+
+    table.on('tool(main-table)', function(obj) {
+        if (obj.event === 'del') {
+            layer.confirm('确认删除该虚拟机实例？', {icon: 3}, function(idx) {
+                $.ajax({
+                    url: '/vm-instance/api/',
+                    type: 'DELETE',
+                    contentType: 'application/json',
+                    data: JSON.stringify({id: obj.data.id}),
+                    headers: {'X-CSRFToken': getCookie('csrftoken_dbatoolbox')},
+                    success: function(r) {
+                        if (r.code === 0) { layer.msg(r.msg, {icon: 1}); reloadTable(); }
+                        else { layer.msg(r.msg, {icon: 2}); }
+                    }
+                });
+                layer.close(idx);
+            });
+        } else if (obj.event === 'edit') {
+            openForm('修改虚拟机实例', obj.data);
+        }
+    });
+
+    $('#btn-add').click(function() { openForm('添加虚拟机实例'); });
+
+    function openForm(title, data) {
+        data = data || {};
+        var html = '<div style="padding:20px 25px 10px;">'
+            + '<form class="layui-form">'
+            + '<input type="hidden" id="obj-id" value="' + (data.id || '') + '">'
+            + '<table class="layui-table" style="margin:0;"><tbody>'
+            + '<tr>'
+                + '<td style="width:14%;text-align:right;">关联主机</td><td style="width:19%;">' + buildSelect('f-host', hosts, data.host_id, '请选择主机', 'id', hostTextFn) + '</td>'
+                + '<td style="width:14%;text-align:right;">虚拟化平台</td><td style="width:19%;"><select name="f-virt-platform" lay-ignore style="width:100%;height:38px;border:1px solid #e6e6e6;border-radius:2px;padding:0 8px;">'
+                + '<option value="vmware"' + (data.virt_platform === 'vmware' ? ' selected' : '') + '>VMware</option>'
+                + '<option value="kvm"' + (data.virt_platform === 'kvm' ? ' selected' : '') + '>KVM</option>'
+                + '<option value="proxmox"' + (data.virt_platform === 'proxmox' ? ' selected' : '') + '>Proxmox</option>'
+                + '<option value="other"' + (data.virt_platform === 'other' ? ' selected' : '') + '>其他</option>'
+                + '</select></td>'
+                + '<td style="width:14%;text-align:right;">VM UUID</td><td style="width:19%;"><input type="text" id="f-vm-uuid" class="layui-input" value="' + (data.vm_uuid || '') + '"></td>'
+            + '</tr>'
+            + '<tr>'
+                + '<td style="text-align:right;">归属宿主机</td><td>' + buildSelect('f-parent-host', hosts, data.parent_host_id, '请选择宿主机', 'id', hostTextFn) + '</td>'
+                + '<td style="text-align:right;">资源池</td><td><input type="text" id="f-resource-pool" class="layui-input" value="' + (data.resource_pool || '') + '"></td>'
+                + '<td style="text-align:right;">所属集群</td><td><input type="text" id="f-cluster-name" class="layui-input" value="' + (data.cluster_name || '') + '"></td>'
+            + '</tr>'
+            + '<tr>'
+                + '<td style="text-align:right;">CPU配额</td><td><input type="text" id="f-cpu-quota" class="layui-input" value="' + (data.cpu_quota || '') + '"></td>'
+                + '<td style="text-align:right;">内存配额</td><td><input type="text" id="f-mem-quota" class="layui-input" value="' + (data.mem_quota || '') + '"></td>'
+                + '<td style="text-align:right;">磁盘配额</td><td><input type="text" id="f-disk-quota" class="layui-input" value="' + (data.disk_quota || '') + '"></td>'
+            + '</tr>'
+            + '<tr>'
+                + '<td style="text-align:right;">快照数量</td><td><input type="number" id="f-snapshot-count" class="layui-input" value="' + (data.snapshot_count || 0) + '"></td>'
+                + '<td style="text-align:right;">存在快照</td><td><select id="f-has-snapshot" lay-ignore style="width:100%;height:38px;border:1px solid #e6e6e6;border-radius:2px;padding:0 8px;">'
+                + '<option value="1"' + (data.has_snapshot ? ' selected' : '') + '>是</option>'
+                + '<option value="0"' + (!data.has_snapshot ? ' selected' : '') + '>否</option>'
+                + '</select></td>'
+                + '<td style="text-align:right;">开机自启</td><td><select id="f-auto-start" lay-ignore style="width:100%;height:38px;border:1px solid #e6e6e6;border-radius:2px;padding:0 8px;">'
+                + '<option value="1"' + (data.auto_start ? ' selected' : '') + '>是</option>'
+                + '<option value="0"' + (!data.auto_start ? ' selected' : '') + '>否</option>'
+                + '</select></td>'
+            + '</tr>'
+            + '<tr>'
+                + '<td style="text-align:right;">备注</td><td colspan="5"><input type="text" id="f-remark" class="layui-input" value="' + (data.remark || '') + '"></td>'
+            + '</tr>'
+            + '</tbody></table></form></div>';
+
+        layer.open({
+            type: 1,
+            title: title,
+            area: ['1000px', '500px'],
+            content: html,
+            btn: ['保存', '取消'],
+            yes: function(index) {
+                var payload = {
+                    id: $('#obj-id').val(),
+                    host_id: $('select[name="f-host"]').val(),
+                    virt_platform: $('select[name="f-virt-platform"]').val(),
+                    vm_uuid: $('#f-vm-uuid').val().trim(),
+                    parent_host_id: $('select[name="f-parent-host"]').val() || null,
+                    resource_pool: $('#f-resource-pool').val().trim(),
+                    cluster_name: $('#f-cluster-name').val().trim(),
+                    cpu_quota: $('#f-cpu-quota').val().trim(),
+                    mem_quota: $('#f-mem-quota').val().trim(),
+                    disk_quota: $('#f-disk-quota').val().trim(),
+                    snapshot_count: parseInt($('#f-snapshot-count').val()) || 0,
+                    has_snapshot: $('#f-has-snapshot').val() === '1',
+                    auto_start: $('#f-auto-start').val() === '1',
+                    remark: $('#f-remark').val().trim()
+                };
+                if (!payload.host_id) { layer.msg('请选择关联主机', {icon: 2}); return; }
+
+                var isEdit = !!payload.id;
+                $.ajax({
+                    url: '/vm-instance/api/',
+                    type: isEdit ? 'PUT' : 'POST',
+                    contentType: 'application/json',
+                    data: JSON.stringify(payload),
+                    headers: {'X-CSRFToken': getCookie('csrftoken_dbatoolbox')},
+                    success: function(r) {
+                        if (r.code === 0) { layer.msg(r.msg, {icon: 1}); layer.close(index); reloadTable(); }
+                        else { layer.msg(r.msg, {icon: 2}); }
+                    }
+                });
+            },
+            btn2: function(index) { layer.close(index); }
+        });
+    }
+
+    function getCookie(name) {
+        var r = document.cookie.match("\\b" + name + "=([^;]*)\\b");
+        return r ? r[1] : '';
+    }
+});
+</script>
+{% endblock %}

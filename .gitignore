@@ -1,0 +1,55 @@
+# python缓存
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 虚拟环境
+venv/
+env/
+.venv/
+
+# django sqlite数据库
+*.sqlite3
+*.db
+
+# 日志
+logs/
+*.log
+
+*.swp
+*.swo
+*.lock
+*~
+downloads/
+media/
+.claude/
+
+# 静态/媒体文件（按需）
+media/
+static/
+static_collect/
+
+# 环境变量 / 密钥
+.env
+*.env
+.env.local
+.env.dev
+.env.prod
+.flaskenv
+SECRET_KEY
+credentials.json
+
+# IDE
+.idea/
+.vscode/
+
+# macOS 系统文件
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+

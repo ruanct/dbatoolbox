@@ -1,0 +1,35 @@
+from django.urls import path
+
+from . import views
+
+urlpatterns = [
+    path("login/", views.login_view, name="login"),
+    path("logout/", views.logout_view, name="logout"),
+    path("dashboard/", views.dashboard_view, name="dashboard"),
+    path("host/", views.host_list_view, name="host_list"),
+    path("host/export/", views.host_export_view, name="host_export"),
+    path("host/api/", views.host_api_view, name="host_api"),
+    path("host-hardware/", views.hardware_list_view, name="hardware_list"),
+    path("host-hardware/api/", views.hardware_api_view, name="hardware_api"),
+    path("host-domain/", views.domain_list_view, name="domain_list"),
+    path("host-domain/api/", views.domain_api_view, name="domain_api"),
+    path("vm-instance/", views.vm_list_view, name="vm_list"),
+    path("vm-instance/api/", views.vm_api_view, name="vm_api"),
+    path("docker-container/", views.container_list_view, name="container_list"),
+    path("docker-container/api/", views.container_api_view, name="container_api"),
+    path("script-category/", views.script_category_list_view, name="script_category_list"),
+    path("script-category/api/", views.script_category_api_view, name="script_category_api"),
+    path("script-repository/", views.script_repository_list_view, name="script_repository_list"),
+    path("script-repository/api/", views.script_repository_api_view, name="script_repository_api"),
+    path("batch-execute/", views.batch_execute_list_view, name="batch_execute_list"),
+    path("batch-execute/api/", views.batch_execute_api_view, name="batch_execute_api"),
+    path("batch-execute/detail/<int:task_id>/", views.batch_execute_detail_api, name="batch_execute_detail_api"),
+    path("file-dist/", views.file_dist_list_view, name="file_dist_list"),
+    path("file-dist/api/", views.file_dist_api_view, name="file_dist_api"),
+    path("file-dist/detail/<int:task_id>/", views.file_dist_detail_api, name="file_dist_detail_api"),
+    path("web-terminal/", views.web_terminal_list_view, name="web_terminal_list"),
+    path("web-terminal/hosts/", views.web_terminal_hosts_api, name="web_terminal_hosts_api"),
+    path("web-terminal/<int:host_id>/", views.web_terminal_page_view, name="web_terminal_page"),
+    path("<str:model_key>/", views.config_list_view, name="config_list"),
+    path("<str:model_key>/api/", views.config_api_view, name="config_api"),
+]

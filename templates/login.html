@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+{% load static %}
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DBAToolbox - 登录</title>
+    <link rel="stylesheet" href="/static/layui.css">
+    <style>
+        body { background: #1e9fff; }
+        .login-wrapper {
+            width: 400px; margin: 180px auto 0; background: #fff;
+            border-radius: 6px; padding: 40px 40px 30px;
+            box-shadow: 0 4px 20px rgba(0,0,0,.15);
+        }
+        .login-wrapper h2 { text-align: center; color: #333; margin-bottom: 30px; font-size: 22px; }
+        .login-wrapper .layui-input-block { margin-left: 0; }
+        .login-wrapper .layui-btn { width: 100%; }
+        .login-wrapper .error-msg { color: #ff5722; text-align: center; margin-bottom: 15px; }
+    </style>
+</head>
+<body>
+    <div class="login-wrapper">
+        <h2>DBAToolbox 运维系统</h2>
+        {% if error %}
+        <div class="error-msg">{{ error }}</div>
+        {% endif %}
+        <form class="layui-form" method="post" action="{% url 'login' %}">
+            {% csrf_token %}
+            <div class="layui-form-item">
+                <input type="text" name="username" lay-verify="required" placeholder="用户名"
+                       autocomplete="off" class="layui-input" value="{{ username|default:'' }}">
+            </div>
+            <div class="layui-form-item">
+                <input type="password" name="password" lay-verify="required" placeholder="密码"
+                       autocomplete="off" class="layui-input">
+            </div>
+            <div class="layui-form-item">
+                <button type="submit" class="layui-btn layui-btn-normal">登 录</button>
+            </div>
+        </form>
+    </div>
+    <script src="/static/jquery.min.js"></script>
+    <script src="/static/layui.js"></script>
+</body>
+</html>

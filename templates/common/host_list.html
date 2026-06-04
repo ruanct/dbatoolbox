@@ -1,0 +1,429 @@
+{% extends "base.html" %}
+{% block title %}主机维护 - DBAToolbox{% endblock %}
+
+{% block content %}
+<div class="breadcrumb">基础维护 / 主机维护</div>
+
+<div class="layui-card">
+    <div class="layui-card-header"><span>主机列表</span></div>
+    <div class="layui-card-body">
+        <div class="layui-form layui-form-item" style="margin-bottom:10px;">
+            <div class="layui-inline">
+                <input type="text" id="search-keyword" placeholder="显示名/主机名搜索" class="layui-input" style="width:260px;">
+            </div>
+            <button class="layui-btn" id="btn-search"><i class="layui-icon layui-icon-search"></i> 搜索</button>
+            <button class="layui-btn layui-btn-normal" id="btn-add"><i class="layui-icon layui-icon-add-1"></i> 添加</button>
+            <button class="layui-btn layui-btn-warm" id="btn-export"><i class="layui-icon layui-icon-download-circle"></i> 导出</button>
+        </div>
+        <table id="host-table" lay-filter="host-table"></table>
+    </div>
+</div>
+
+{% verbatim %}
+<script type="text/html" id="ip-column-tpl">
+    {{# if(d.ip_count > 1) { }}
+    <a href="javascript:;" class="ip-hover-trigger" data-id="{{ d.id }}">{{ d.first_ip }} ({{ d.ip_count }})</a>
+    {{# } else if(d.ip_count === 1) { }}
+    {{ d.first_ip }}
+    {{# } }}
+</script>
+{% endverbatim %}
+
+{% verbatim %}
+<script type="text/html" id="acct-column-tpl">
+    {{# if(d.account_count > 1) { }}
+    <a href="javascript:;" class="acct-hover-trigger" data-id="{{ d.id }}">{{ d.admin_accounts_display || '-' }} ({{ d.account_count }})</a>
+    {{# } else { }}
+    {{ d.admin_accounts_display || '-' }}
+    {{# } }}
+</script>
+{% endverbatim %}
+
+<script type="text/html" id="action-bar">
+    <a class="layui-btn layui-btn-xs layui-btn-normal" lay-event="edit">修改</a>
+    <a class="layui-btn layui-btn-xs layui-btn-danger" lay-event="del">删除</a>
+</script>
+{% endblock %}
+
+{% block extra_script %}
+<script>
+var refData = {
+    hostTypes: {{ host_types|safe }},
+    hostStatuses: {{ host_statuses|safe }},
+    datacenters: {{ datacenters|safe }},
+    businesses: {{ businesses|safe }},
+    osTypes: {{ os_types|safe }}
+};
+
+function buildSelect(name, list, currentVal, placeholder) {
+    var s = '<select name="' + name + '" lay-ignore style="width:100%;height:38px;border:1px solid #e6e6e6;border-radius:2px;padding:0 8px;">'
+        + '<option value="">' + (placeholder || '请选择') + '</option>';
+    for (var i = 0; i < list.length; i++) {
+        var sel = (list[i].id === currentVal) ? ' selected' : '';
+        s += '<option value="' + list[i].id + '"' + sel + '>' + list[i].name + '</option>';
+    }
+    s += '</select>';
+    return s;
+}
+
+function buildIpRow(data, locked) {
+    data = data || {};
+    // 首行且无数据时，默认IP类型为业务IP
+    var ipType = data.ip_type || (locked ? 'business' : '');
+    return '<tr class="ip-row">'
+        + '<td><input type="text" class="layui-input ip-addr" value="' + (data.ip_address || '') + '" placeholder="IP地址"></td>'
+        + '<td><select lay-ignore class="ip-type" style="height:38px;border:1px solid #e6e6e6;border-radius:2px;"' + (locked ? ' disabled' : '') + '>'
+        + '<option value="business"' + (ipType === 'business' ? ' selected' : '') + '>业务IP</option>'
+        + '<option value="inner"' + (ipType === 'inner' ? ' selected' : '') + '>内网IP</option>'
+        + '<option value="outer"' + (ipType === 'outer' ? ' selected' : '') + '>外网IP</option>'
+        + '</select></td>'
+        + '<td><input type="text" class="layui-input ip-nic" value="' + (data.nic || '') + '" placeholder="网卡"></td>'
+        + '<td>' + (locked ? '' : '<a href="javascript:;" class="del-ip-row" style="color:#ff5722;">删除</a>') + '</td>'
+        + '<input type="hidden" class="ip-id" value="' + (data.id || '') + '">'
+        + '</tr>';
+}
+
+function buildAcctRow(data, locked) {
+    data = data || {};
+    // 首行且无数据时，默认账号类型为管理员
+    var acctType = data.account_type || (locked ? 'adm' : 'std');
+    return '<tr class="acct-row">'
+        + '<td><select lay-ignore class="acct-type" style="height:38px;border:1px solid #e6e6e6;border-radius:2px;"' + (locked ? ' disabled' : '') + '>'
+        + '<option value="std"' + (acctType === 'std' ? ' selected' : '') + '>普通用户</option>'
+        + '<option value="adm"' + (acctType === 'adm' ? ' selected' : '') + '>管理员</option>'
+        + '</select></td>'
+        + '<td><input type="text" class="layui-input acct-name" value="' + (data.account_name || '') + '" placeholder="账号名"></td>'
+        + '<td><input type="text" class="layui-input acct-pswd" value="' + (data.account_pswd || '') + '" placeholder="密码"></td>'
+        + '<td>' + (locked ? '' : '<a href="javascript:;" class="del-acct-row" style="color:#ff5722;">删除</a>') + '</td>'
+        + '<input type="hidden" class="acct-id" value="' + (data.id || '') + '">'
+        + '</tr>';
+}
+
+layui.use(['table', 'layer', 'form'], function() {
+    var table = layui.table;
+    var layer = layui.layer;
+    var form = layui.form;
+
+    var tableIns = table.render({
+        elem: '#host-table',
+        url: '/host/api/',
+        page: true,
+        limit: 10,
+        limits: [10, 20, 50, 100],
+        cols: [[
+            {field: 'id', title: 'ID', width: 70},
+            {field: 'display_name', title: '显示名', width: 140},
+            {field: 'hostname', title: '主机名', width: 150},
+            {field: 'ssh_port', title: 'SSH端口', width: 90},
+            {field: 'first_ip', title: 'IP地址', width: 160, templet: '#ip-column-tpl'},
+            {field: 'admin_accounts_display', title: '管理员账号', width: 260, templet: '#acct-column-tpl'},
+            {title: '操作', width: 120, toolbar: '#action-bar'},
+            {field: 'host_type__name', title: '主机类型', width: 100},
+            {field: 'host_status__name', title: '主机状态', width: 100},
+            {field: 'datacenter__name', title: '所属机房', width: 100},
+            {field: 'business__name', title: '所属业务', width: 100},
+            {field: 'os_type__name', title: 'OS类型', width: 90},
+            {field: 'os_version', title: 'OS版本', width: 100},
+            {field: 'remark', title: '备注', width: 120},
+        ]],
+        defaultToolbar: [],
+        request: {pageName: 'page', limitName: 'limit'},
+        response: {statusCode: 0, countName: 'count', dataName: 'data'},
+        parseData: function(res) {
+            return {code: res.code, msg: res.msg, count: res.count, data: res.data};
+        }
+    });
+
+    function reloadTable() {
+        tableIns.reload({where: {keyword: $('#search-keyword').val()}});
+    }
+
+    $('#btn-search').click(reloadTable);
+    $('#search-keyword').keydown(function(e) { if (e.keyCode === 13) reloadTable(); });
+
+    $('#btn-export').click(function() {
+        var keyword = $('#search-keyword').val();
+        window.location.href = '/host/export/?keyword=' + encodeURIComponent(keyword);
+    });
+
+    // === IP 列：悬停展示 + 单击固定/取消 ===
+    function _buildIpTipsHtml(host) {
+        var html = '<div style="width:420px;"><table class="layui-table" style="margin:0;background:#fff;"><thead><tr><th>IP地址</th><th>IP类型</th><th>网卡</th></tr></thead><tbody>';
+        for (var j = 0; j < host.ips.length; j++) {
+            var ip = host.ips[j];
+            var typeLabel = ip.ip_type === 'business' ? '业务IP' : (ip.ip_type === 'inner' ? '内网IP' : '外网IP');
+            html += '<tr><td>' + ip.ip_address + '</td><td>' + typeLabel + '</td><td>' + (ip.nic || '') + '</td></tr>';
+        }
+        html += '</tbody></table></div>';
+        return html;
+    }
+
+    function _findHostById(hostId) {
+        var rowData = table.cache['host-table'];
+        for (var i = 0; rowData && i < rowData.length; i++) {
+            if (rowData[i].id === hostId) return rowData[i];
+        }
+        return null;
+    }
+
+    function _showIpTip(el, host) {
+        el._tipIdx = layer.tips(_buildIpTipsHtml(host), el, {tips: [1, '#1E9FFF'], time: 0, anim: 0, area: ['440px', 'auto']});
+    }
+
+    $(document).on('mouseenter', '.ip-hover-trigger', function() {
+        if (this._tipPinned) return;
+        var host = _findHostById($(this).data('id'));
+        if (!host || !host.ips || !host.ips.length) return;
+        _showIpTip(this, host);
+    });
+    $(document).on('mouseleave', '.ip-hover-trigger', function() {
+        if (this._tipPinned) return;
+        if (this._tipIdx) { layer.close(this._tipIdx); this._tipIdx = null; }
+    });
+    $(document).on('click', '.ip-hover-trigger', function() {
+        if (this._tipPinned) {
+            // 取消固定：恢复默认
+            this._tipPinned = false;
+            if (this._tipIdx) { layer.close(this._tipIdx); this._tipIdx = null; }
+        } else {
+            // 固定显示
+            this._tipPinned = true;
+            if (!this._tipIdx) {
+                var host = _findHostById($(this).data('id'));
+                if (host && host.ips && host.ips.length) _showIpTip(this, host);
+            }
+        }
+    });
+
+    // === 管理员账号列：悬停展示 + 单击固定/取消 ===
+    function _buildAcctTipsHtml(host) {
+        var html = '<div style="width:460px;"><table class="layui-table" style="margin:0;background:#fff;"><thead><tr><th>类型</th><th>账号</th><th>密码</th></tr></thead><tbody>';
+        for (var j = 0; j < host.accounts.length; j++) {
+            var acct = host.accounts[j];
+            var typeLabel = acct.account_type === 'adm' ? '管理员' : '普通用户';
+            html += '<tr><td>' + typeLabel + '</td><td>' + acct.account_name + '</td><td>' + (acct.account_pswd || '') + '</td></tr>';
+        }
+        html += '</tbody></table></div>';
+        return html;
+    }
+
+    function _showAcctTip(el, host) {
+        el._tipIdx = layer.tips(_buildAcctTipsHtml(host), el, {tips: [1, '#1E9FFF'], time: 0, anim: 0, area: ['480px', 'auto']});
+    }
+
+    $(document).on('mouseenter', '.acct-hover-trigger', function() {
+        if (this._tipPinned) return;
+        var host = _findHostById($(this).data('id'));
+        if (!host || !host.accounts || !host.accounts.length) return;
+        _showAcctTip(this, host);
+    });
+    $(document).on('mouseleave', '.acct-hover-trigger', function() {
+        if (this._tipPinned) return;
+        if (this._tipIdx) { layer.close(this._tipIdx); this._tipIdx = null; }
+    });
+    $(document).on('click', '.acct-hover-trigger', function() {
+        if (this._tipPinned) {
+            this._tipPinned = false;
+            if (this._tipIdx) { layer.close(this._tipIdx); this._tipIdx = null; }
+        } else {
+            this._tipPinned = true;
+            if (!this._tipIdx) {
+                var host = _findHostById($(this).data('id'));
+                if (host && host.accounts && host.accounts.length) _showAcctTip(this, host);
+            }
+        }
+    });
+
+    // 删除
+    table.on('tool(host-table)', function(obj) {
+        if (obj.event === 'del') {
+            layer.confirm('确认删除主机「' + obj.data.display_name + '」？', {icon: 3}, function(idx) {
+                $.ajax({
+                    url: '/host/api/',
+                    type: 'DELETE',
+                    contentType: 'application/json',
+                    data: JSON.stringify({id: obj.data.id}),
+                    headers: {'X-CSRFToken': getCookie('csrftoken_dbatoolbox')},
+                    success: function(r) {
+                        if (r.code === 0) { layer.msg(r.msg, {icon: 1}); reloadTable(); }
+                        else { layer.msg(r.msg, {icon: 2}); }
+                    }
+                });
+                layer.close(idx);
+            });
+        } else if (obj.event === 'edit') {
+            openForm('修改主机', obj.data);
+        }
+    });
+
+    // 添加
+    $('#btn-add').click(function() { openForm('添加主机'); });
+
+    // ======= 表单对话框 =======
+    function openForm(title, data) {
+        data = data || {};
+        var ips = data.ips || [];
+        var accounts = data.accounts || [];
+
+        // Build host fields section
+        var hostHtml = '<div style="padding:20px 25px 10px;">'
+            + '<form class="layui-form">'
+            + '<input type="hidden" id="host-id" value="' + (data.id || '') + '">'
+            + '<table class="layui-table" style="margin:0;"><tbody>'
+            + '<tr>'
+                + '<td style="width:12%;text-align:right;">显示名</td><td style="width:21%;"><input type="text" id="f-display-name" class="layui-input" value="' + (data.display_name || '') + '"></td>'
+                + '<td style="width:12%;text-align:right;">主机名</td><td style="width:21%;"><input type="text" id="f-hostname" class="layui-input" value="' + (data.hostname || '') + '"></td>'
+                + '<td style="width:12%;text-align:right;">SSH端口</td><td style="width:21%;"><input type="number" id="f-ssh-port" class="layui-input" value="' + (data.ssh_port || 22) + '"></td>'
+            + '</tr>'
+            + '<tr>'
+                + '<td style="text-align:right;">主机类型</td><td>' + buildSelect('f-host-type', refData.hostTypes, data.host_type_id) + '</td>'
+                + '<td style="text-align:right;">主机状态</td><td>' + buildSelect('f-host-status', refData.hostStatuses, data.host_status_id) + '</td>'
+                + '<td style="text-align:right;">所属机房</td><td>' + buildSelect('f-datacenter', refData.datacenters, data.datacenter_id) + '</td>'
+            + '</tr>'
+            + '<tr>'
+                + '<td style="text-align:right;">所属业务</td><td>' + buildSelect('f-business', refData.businesses, data.business_id) + '</td>'
+                + '<td style="text-align:right;">OS类型</td><td>' + buildSelect('f-os-type', refData.osTypes, data.os_type_id) + '</td>'
+                + '<td style="text-align:right;">OS版本</td><td><input type="text" id="f-os-version" class="layui-input" value="' + (data.os_version || '') + '"></td>'
+            + '</tr>'
+            + '<tr>'
+                + '<td style="text-align:right;">备注</td><td colspan="5"><input type="text" id="f-remark" class="layui-input" value="' + (data.remark || '') + '"></td>'
+            + '</tr>'
+            + '</tbody></table></form></div>';
+
+        // Build IP section
+        var ipHtml = '<table class="layui-table" style="margin:0;" id="ip-table"><thead><tr>'
+            + '<th style="width:36%;">IP地址</th><th style="width:24%;">IP类型</th><th style="width:24%;">网卡</th><th style="width:16%;">操作</th>'
+            + '</tr></thead><tbody>';
+        for (var i = 0; i < ips.length; i++) { ipHtml += buildIpRow(ips[i], i === 0); }
+        if (ips.length === 0) { ipHtml += buildIpRow(null, true); }  // 新主机默认一行业务IP
+        ipHtml += '</tbody></table>'
+            + '<button class="layui-btn layui-btn-xs" id="add-ip-row" style="margin:6px 0 0 15px;">新增IP</button>';
+
+        // Build account section
+        var acctHtml = '<table class="layui-table" style="margin:0;" id="acct-table"><thead><tr>'
+            + '<th style="width:18%;">账号类型</th><th style="width:24%;">账号名称</th><th style="width:42%;">账号密码</th><th style="width:16%;">操作</th>'
+            + '</tr></thead><tbody>';
+        for (var j = 0; j < accounts.length; j++) { acctHtml += buildAcctRow(accounts[j], j === 0); }
+        if (accounts.length === 0) { acctHtml += buildAcctRow(null, true); }  // 新主机默认一行管理员
+        acctHtml += '</tbody></table>'
+            + '<button class="layui-btn layui-btn-xs" id="add-acct-row" style="margin:6px 0 0 15px;">新增账号</button>';
+
+        // Combine
+        var fullHtml = hostHtml
+            + '<div style="padding:0 25px; display:flex; gap:15px;">'
+            + '<div style="flex:1;"><h4 style="margin:5px 0;">主机IP</h4>' + ipHtml + '</div>'
+            + '<div style="flex:1;"><h4 style="margin:5px 0;">主机账号</h4>' + acctHtml + '</div>'
+            + '</div>';
+
+        layer.open({
+            type: 1,
+            title: title,
+            area: ['1200px', '700px'],
+            content: fullHtml,
+            btn: ['保存', '取消'],
+            yes: function(index) {
+                var hostData = {
+                    id: $('#host-id').val(),
+                    display_name: $('#f-display-name').val().trim(),
+                    hostname: $('#f-hostname').val().trim(),
+                    ssh_port: parseInt($('#f-ssh-port').val()) || 22,
+                    host_type_id: $('select[name="f-host-type"]').val(),
+                    host_status_id: $('select[name="f-host-status"]').val(),
+                    datacenter_id: $('select[name="f-datacenter"]').val(),
+                    business_id: $('select[name="f-business"]').val(),
+                    os_type_id: $('select[name="f-os-type"]').val(),
+                    os_version: $('#f-os-version').val().trim(),
+                    remark: $('#f-remark').val().trim()
+                };
+
+                if (!hostData.display_name && !hostData.hostname) {
+                    layer.msg('请填写显示名或主机名', {icon: 2}); return;
+                }
+
+                // Collect IPs
+                hostData.ips = [];
+                $('#ip-table .ip-row').each(function() {
+                    var addr = $(this).find('.ip-addr').val().trim();
+                    if (!addr) return;
+                    hostData.ips.push({
+                        id: $(this).find('.ip-id').val() ? parseInt($(this).find('.ip-id').val()) : null,
+                        ip_address: addr,
+                        ip_type: $(this).find('.ip-type').val(),
+                        nic: $(this).find('.ip-nic').val().trim()
+                    });
+                });
+
+                // Collect accounts
+                hostData.accounts = [];
+                $('#acct-table .acct-row').each(function() {
+                    var name = $(this).find('.acct-name').val().trim();
+                    if (!name) return;
+                    hostData.accounts.push({
+                        id: $(this).find('.acct-id').val() ? parseInt($(this).find('.acct-id').val()) : null,
+                        account_type: $(this).find('.acct-type').val(),
+                        account_name: name,
+                        account_pswd: $(this).find('.acct-pswd').val()
+                    });
+                });
+
+                // 验证：第一个 IP 必须为业务IP
+                if (hostData.ips.length > 0 && hostData.ips[0].ip_type !== 'business') {
+                    layer.msg('第一个主机IP必须为业务IP', {icon: 2}); return;
+                }
+                // 验证：至少一个管理员账号，且只能有一个
+                var admCount = 0;
+                for (var k = 0; k < hostData.accounts.length; k++) {
+                    if (hostData.accounts[k].account_type === 'adm') admCount++;
+                }
+                if (admCount === 0) {
+                    layer.msg('至少需要一个管理员账号', {icon: 2}); return;
+                }
+                if (admCount > 1) {
+                    layer.msg('只能保留一个管理员账号，其余账号请设为普通用户', {icon: 2}); return;
+                }
+
+                var isEdit = !!hostData.id;
+                $.ajax({
+                    url: '/host/api/',
+                    type: isEdit ? 'PUT' : 'POST',
+                    contentType: 'application/json',
+                    data: JSON.stringify(hostData),
+                    headers: {'X-CSRFToken': getCookie('csrftoken_dbatoolbox')},
+                    success: function(r) {
+                        if (r.code === 0) {
+                            layer.msg(r.msg, {icon: 1});
+                            layer.close(index);
+                            reloadTable();
+                        } else {
+                            layer.msg(r.msg, {icon: 2});
+                        }
+                    }
+                });
+            },
+            btn2: function(index) { layer.close(index); }
+        });
+
+        // Bind add/remove buttons after layer renders
+        setTimeout(function() {
+            $('#add-ip-row').click(function() {
+                $('#ip-table tbody').append(buildIpRow());
+            });
+            $('#add-acct-row').click(function() {
+                $('#acct-table tbody').append(buildAcctRow());
+            });
+            $(document).on('click', '.del-ip-row', function() {
+                $(this).closest('tr').remove();
+            });
+            $(document).on('click', '.del-acct-row', function() {
+                $(this).closest('tr').remove();
+            });
+        }, 100);
+    }
+
+    function getCookie(name) {
+        var r = document.cookie.match("\\b" + name + "=([^;]*)\\b");
+        return r ? r[1] : '';
+    }
+});
+</script>
+{% endblock %}

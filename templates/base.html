@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}DBAToolbox{% endblock %}</title>
+    <link rel="stylesheet" href="/static/layui.css">
+    <script src="/static/jquery.min.js"></script>
+    <script src="/static/layui.js"></script>
+    {% block extra_head %}{% endblock %}
+    <style>
+        html, body { height: 100%; margin: 0; }
+        .layui-layout-admin .layui-header { background: #23262e; height: 50px; overflow: hidden; z-index: 999; }
+        .layui-layout-admin .layui-logo { color: #fff; line-height: 50px; font-size: 16px; width: auto; white-space: nowrap; }
+        .layui-layout-admin .layui-header .header-right { float: right; line-height: 50px; color: #ccc; padding-right: 20px; }
+        .layui-layout-admin .layui-header .header-right a { color: #5fb878; }
+        .layui-layout-admin .layui-side { top: 50px; background: #393d49; }
+        .layui-layout-admin .layui-body { top: 50px; bottom: 0; }
+        .layui-layout-admin .layui-body .content-wrapper { background: #fff; padding: 20px; min-height: 100%; border-radius: 2px; }
+        .breadcrumb { margin-bottom: 15px; color: #666; }
+    </style>
+</head>
+<body>
+<div class="layui-layout layui-layout-admin">
+    <div class="layui-header">
+        <div class="layui-logo">DBAToolbox 数据库运维系统</div>
+        <div class="header-right">
+            欢迎，<span>{{ request.user.username }}</span>
+            &nbsp;|&nbsp;
+            <a href="{% url 'logout' %}">退出登录</a>
+        </div>
+    </div>
+
+    <div class="layui-side">
+        <ul class="layui-nav layui-nav-tree" lay-filter="side-nav" style="border-radius:0;">
+            <li class="layui-nav-item">
+                <a href="javascript:;">通用配置</a>
+                <dl class="layui-nav-child">
+                    <dd><a href="/os-type/" lay-href="/os-type/">OS类型</a></dd>
+                    <dd><a href="/host-status/" lay-href="/host-status/">主机状态</a></dd>
+                    <dd><a href="/host-type/" lay-href="/host-type/">主机类型</a></dd>
+                    <dd><a href="/datacenter/" lay-href="/datacenter/">所属机房</a></dd>
+                    <dd><a href="/business/" lay-href="/business/">所属业务</a></dd>
+                    <dd><a href="/environment/" lay-href="/environment/">所属环境</a></dd>
+                </dl>
+            </li>
+            <li class="layui-nav-item">
+                <a href="javascript:;">基础维护</a>
+                <dl class="layui-nav-child">
+                    <dd><a href="/host/" lay-href="/host/">主机维护</a></dd>
+                    <dd><a href="/host-hardware/" lay-href="/host-hardware/">主机硬件</a></dd>
+                    <dd><a href="/host-domain/" lay-href="/host-domain/">主机域名</a></dd>
+                    <dd><a href="/vm-instance/" lay-href="/vm-instance/">虚拟机实例</a></dd>
+                    <dd><a href="/docker-container/" lay-href="/docker-container/">Docker容器</a></dd>
+                </dl>
+            </li>
+            <li class="layui-nav-item">
+                <a href="javascript:;">运维管理</a>
+                <dl class="layui-nav-child">
+                    <dd><a href="/script-category/" lay-href="/script-category/">脚本分类</a></dd>
+                    <dd><a href="/script-repository/" lay-href="/script-repository/">脚本仓库</a></dd>
+                    <dd><a href="/batch-execute/" lay-href="/batch-execute/">批量执行</a></dd>
+                    <dd><a href="/file-dist/" lay-href="/file-dist/">文件分发</a></dd>
+                    <dd><a href="/web-terminal/" lay-href="/web-terminal/">网页终端</a></dd>
+                </dl>
+            </li>
+        </ul>
+    </div>
+
+    <div class="layui-body">
+        <div class="content-wrapper">
+            {% block content %}{% endblock %}
+        </div>
+    </div>
+</div>
+
+<script>
+layui.use('element', function() {
+    var element = layui.element;
+    var currentPath = window.location.pathname;
+    $('.layui-nav-tree a[lay-href]').each(function() {
+        if ($(this).attr('lay-href') === currentPath) {
+            $(this).closest('dd').addClass('layui-this');
+            $(this).closest('.layui-nav-item').addClass('layui-nav-itemed');
+        }
+    });
+    element.render('nav', 'side-nav');
+});
+</script>
+{% block extra_script %}{% endblock %}
+</body>
+</html>

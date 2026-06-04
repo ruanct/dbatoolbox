@@ -1,0 +1,233 @@
+{% extends "base.html" %}
+{% block title %}Docker容器 - DBAToolbox{% endblock %}
+
+{% block content %}
+<div class="breadcrumb">基础维护 / Docker容器</div>
+
+<div class="layui-card">
+    <div class="layui-card-header"><span>Docker容器列表</span></div>
+    <div class="layui-card-body">
+        <div class="layui-form layui-form-item" style="margin-bottom:10px;">
+            <div class="layui-inline">
+                <input type="text" id="search-keyword" placeholder="容器名/主机名/镜像搜索" class="layui-input" style="width:260px;">
+            </div>
+            <button class="layui-btn" id="btn-search"><i class="layui-icon layui-icon-search"></i> 搜索</button>
+            <button class="layui-btn layui-btn-normal" id="btn-add"><i class="layui-icon layui-icon-add-1"></i> 添加</button>
+        </div>
+        <table id="main-table" lay-filter="main-table"></table>
+    </div>
+</div>
+
+<script type="text/html" id="action-bar">
+    <a class="layui-btn layui-btn-xs layui-btn-normal" lay-event="edit">修改</a>
+    <a class="layui-btn layui-btn-xs layui-btn-danger" lay-event="del">删除</a>
+</script>
+
+{% verbatim %}
+<script type="text/html" id="bool-tpl">
+    {{# if(d.auto_start) { }}<span style="color:#5fb878;">是</span>{{# } else { }}<span style="color:#999;">否</span>{{# } }}
+</script>
+{% endverbatim %}
+{% endblock %}
+
+{% block extra_script %}
+<script>
+var hosts = {{ hosts|safe }};
+var businesses = {{ businesses|safe }};
+
+function hostTextFn(d) { return d.display_name || d.hostname; }
+
+function buildSelect(name, list, currentVal, placeholder, idField, textFn) {
+    idField = idField || 'id';
+    textFn = textFn || function(d) { return d.name || d.display_name || d.hostname; };
+    var s = '<select name="' + name + '" lay-ignore style="width:100%;height:38px;border:1px solid #e6e6e6;border-radius:2px;padding:0 8px;">'
+        + '<option value="">' + (placeholder || '请选择') + '</option>';
+    for (var i = 0; i < list.length; i++) {
+        var sel = (list[i][idField] == currentVal) ? ' selected' : '';
+        s += '<option value="' + list[i][idField] + '"' + sel + '>' + textFn(list[i]) + '</option>';
+    }
+    s += '</select>';
+    return s;
+}
+
+layui.use(['table', 'layer', 'form'], function() {
+    var table = layui.table;
+    var layer = layui.layer;
+
+    var tableIns = table.render({
+        elem: '#main-table',
+        url: '/docker-container/api/',
+        page: true,
+        limit: 10,
+        limits: [10, 20, 50, 100],
+        cols: [[
+            {field: 'id', title: 'ID', width: 60},
+            {field: 'container_name', title: '容器名称', width: 150},
+            {field: 'container_ip', title: '容器IP', width: 130},
+            {field: 'network_mode__display', title: '网络模式', width: 100},
+            {field: 'status__display', title: '容器状态', width: 90},
+            {field: 'auto_start', title: '开机自启', width: 90, templet: '#bool-tpl'},
+            {field: 'host__display', title: '归属宿主机', width: 130},
+            {field: 'business__name', title: '所属业务', width: 90},
+            {title: '操作', width: 120, toolbar: '#action-bar'},
+            {field: 'remark', title: '备注', width: 120},
+            {field: 'image_name', title: '镜像名称', width: 200},
+            {field: 'image_repository', title: '镜像仓库', width: 150}
+        ]],
+        defaultToolbar: [],
+        request: {pageName: 'page', limitName: 'limit'},
+        response: {statusCode: 0, countName: 'count', dataName: 'data'},
+        parseData: function(res) {
+            return {code: res.code, msg: res.msg, count: res.count, data: res.data};
+        }
+    });
+
+    function reloadTable() {
+        tableIns.reload({where: {keyword: $('#search-keyword').val()}});
+    }
+
+    $('#btn-search').click(reloadTable);
+    $('#search-keyword').keydown(function(e) { if (e.keyCode === 13) reloadTable(); });
+
+    table.on('tool(main-table)', function(obj) {
+        if (obj.event === 'del') {
+            layer.confirm('确认删除容器「' + obj.data.container_name + '」？', {icon: 3}, function(idx) {
+                $.ajax({
+                    url: '/docker-container/api/',
+                    type: 'DELETE',
+                    contentType: 'application/json',
+                    data: JSON.stringify({id: obj.data.id}),
+                    headers: {'X-CSRFToken': getCookie('csrftoken_dbatoolbox')},
+                    success: function(r) {
+                        if (r.code === 0) { layer.msg(r.msg, {icon: 1}); reloadTable(); }
+                        else { layer.msg(r.msg, {icon: 2}); }
+                    }
+                });
+                layer.close(idx);
+            });
+        } else if (obj.event === 'edit') {
+            openForm('修改容器信息', obj.data);
+        }
+    });
+
+    $('#btn-add').click(function() { openForm('添加容器信息'); });
+
+    function openForm(title, data) {
+        data = data || {};
+        var html = '<div style="padding:20px 25px 10px;">'
+            + '<form class="layui-form">'
+            + '<input type="hidden" id="obj-id" value="' + (data.id || '') + '">'
+            + '<table class="layui-table" style="margin:0;"><tbody>'
+            + '<tr>'
+                + '<td style="width:12%;text-align:right;">容器名称</td><td style="width:21%;"><input type="text" id="f-container-name" class="layui-input" value="' + (data.container_name || '') + '"></td>'
+                + '<td style="width:12%;text-align:right;">所属业务</td><td style="width:12%;">' + buildSelect('f-business', businesses, data.business_id, '请选择业务') + '</td>'
+                + '<td style="width:12%;text-align:right;">归属宿主机</td><td style="width:25%;">' + buildSelect('f-host', hosts, data.host_id, '请选择主机', 'id', hostTextFn) + '</td>'
+            + '</tr>'
+            + '<tr>'
+                + '<td style="text-align:right;">容器ID</td><td><input type="text" id="f-container-id" class="layui-input" value="' + (data.container_id || '') + '"></td>'
+                + '<td style="text-align:right;">网络模式</td><td><select name="f-network-mode" lay-ignore style="width:100%;height:38px;border:1px solid #e6e6e6;border-radius:2px;padding:0 8px;">'
+                + '<option value="bridge"' + (data.network_mode === 'bridge' ? ' selected' : '') + '>桥接模式</option>'
+                + '<option value="host"' + (data.network_mode === 'host' ? ' selected' : '') + '>主机模式</option>'
+                + '<option value="none"' + (data.network_mode === 'none' ? ' selected' : '') + '>无网络</option>'
+                + '<option value="custom"' + (data.network_mode === 'custom' ? ' selected' : '') + '>自定义网络</option>'
+                + '</select></td>'
+                + '<td style="text-align:right;">Docker网络</td><td><input type="text" id="f-docker-network" class="layui-input" value="' + (data.docker_network || '') + '"></td>'
+            + '</tr>'
+            + '<tr>'
+                + '<td style="text-align:right;">容器IP</td><td><input type="text" id="f-container-ip" class="layui-input" value="' + (data.container_ip || '') + '"></td>'
+                + '<td style="text-align:right;">容器状态</td><td><select name="f-status" lay-ignore style="width:100%;height:38px;border:1px solid #e6e6e6;border-radius:2px;padding:0 8px;">'
+                + '<option value="running"' + (data.status === 'running' ? ' selected' : '') + '>运行中</option>'
+                + '<option value="stopped"' + (data.status === 'stopped' ? ' selected' : '') + '>已停止</option>'
+                + '<option value="exited"' + (data.status === 'exited' ? ' selected' : '') + '>已退出</option>'
+                + '<option value="error"' + (data.status === 'error' ? ' selected' : '') + '>异常</option>'
+                + '</select></td>'
+            + '<td style="text-align:right;">负责人</td><td><input type="text" id="f-owner" class="layui-input" value="' + (data.owner || '') + '"></td>'
+            + '</tr>'
+            + '<tr>'
+                + '<td style="text-align:right;">镜像名称</td><td><input type="text" id="f-image-name" class="layui-input" value="' + (data.image_name || '') + '"></td>'
+                + '<td style="text-align:right;">重启策略</td><td><select name="f-restart-policy" lay-ignore style="width:100%;height:38px;border:1px solid #e6e6e6;border-radius:2px;padding:0 8px;">'
+                + '<option value="no"' + (data.restart_policy === 'no' ? ' selected' : '') + '>不重启</option>'
+                + '<option value="always"' + (data.restart_policy === 'always' ? ' selected' : '') + '>总是重启</option>'
+                + '<option value="on-failure"' + (data.restart_policy === 'on-failure' ? ' selected' : '') + '>异常重启</option>'
+                + '</select></td>'
+                + '<td style="text-align:right;">CPU限制</td><td><input type="text" id="f-cpu-limit" class="layui-input" value="' + (data.cpu_limit || '') + '"></td>'
+            + '</tr>'
+            + '<tr>'
+                + '<td style="text-align:right;">镜像仓库</td><td><input type="text" id="f-image-repository" class="layui-input" value="' + (data.image_repository || '') + '"></td>'
+                + '<td style="text-align:right;">开机自启</td><td><select id="f-auto-start" lay-ignore style="width:100%;height:38px;border:1px solid #e6e6e6;border-radius:2px;padding:0 8px;">'
+                + '<option value="1"' + (data.auto_start ? ' selected' : '') + '>是</option>'
+                + '<option value="0"' + (!data.auto_start ? ' selected' : '') + '>否</option>'
+                + '</select></td>'
+                + '<td style="text-align:right;">内存限制</td><td><input type="text" id="f-mem-limit" class="layui-input" value="' + (data.mem_limit || '') + '"></td>'
+            + '</tr>'
+            + '<tr>'
+                + '<td style="text-align:right;">端口映射</td><td colspan="2"><textarea id="f-port-mapping" class="layui-textarea" style="height:50px;">' + (data.port_mapping || '') + '</textarea></td>'
+                + '<td style="text-align:right;">目录挂载</td><td colspan="2"><textarea id="f-volume-mount" class="layui-textarea" style="height:50px;">' + (data.volume_mount || '') + '</textarea></td>'
+            + '</tr>'
+            + '<tr>'
+                + '<td style="text-align:right;">环境变量</td><td colspan="2"><textarea id="f-env-list" class="layui-textarea" style="height:50px;">' + (data.env_list || '') + '</textarea></td>'
+                + '<td style="text-align:right;">启动命令</td><td colspan="2"><textarea id="f-command" class="layui-textarea" style="height:50px;">' + (data.command || '') + '</textarea></td>'
+            + '</tr>'
+            + '<tr>'
+                + '<td style="text-align:right;">备注</td><td colspan="2"><input type="text" id="f-remark" class="layui-input" value="' + (data.remark || '') + '"></td>'
+                + '<td style="text-align:right;">启动时间</td><td colspan="2"><input type="datetime-local" id="f-started-at" class="layui-input" value="' + (data.started_at ? data.started_at.substring(0,16) : '') + '"></td>'
+            + '</tr>'
+            + '</tbody></table></form></div>';
+
+        layer.open({
+            type: 1,
+            title: title,
+            area: ['1200px', '720px'],
+            content: html,
+            btn: ['保存', '取消'],
+            yes: function(index) {
+                var payload = {
+                    id: $('#obj-id').val(),
+                    host_id: $('select[name="f-host"]').val(),
+                    business_id: $('select[name="f-business"]').val() || null,
+                    container_name: $('#f-container-name').val().trim(),
+                    container_id: $('#f-container-id').val().trim(),
+                    image_name: $('#f-image-name').val().trim(),
+                    image_repository: $('#f-image-repository').val().trim(),
+                    container_ip: $('#f-container-ip').val().trim(),
+                    port_mapping: $('#f-port-mapping').val().trim(),
+                    network_mode: $('select[name="f-network-mode"]').val(),
+                    docker_network: $('#f-docker-network').val().trim(),
+                    volume_mount: $('#f-volume-mount').val().trim(),
+                    cpu_limit: $('#f-cpu-limit').val().trim(),
+                    mem_limit: $('#f-mem-limit').val().trim(),
+                    command: $('#f-command').val().trim(),
+                    env_list: $('#f-env-list').val().trim(),
+                    auto_start: $('#f-auto-start').val() === '1',
+                    restart_policy: $('select[name="f-restart-policy"]').val(),
+                    started_at: $('#f-started-at').val() || null,
+                    owner: $('#f-owner').val().trim(),
+                    status: $('select[name="f-status"]').val(),
+                    remark: $('#f-remark').val().trim()
+                };
+                if (!payload.container_name) { layer.msg('请填写容器名称', {icon: 2}); return; }
+
+                var isEdit = !!payload.id;
+                $.ajax({
+                    url: '/docker-container/api/',
+                    type: isEdit ? 'PUT' : 'POST',
+                    contentType: 'application/json',
+                    data: JSON.stringify(payload),
+                    headers: {'X-CSRFToken': getCookie('csrftoken_dbatoolbox')},
+                    success: function(r) {
+                        if (r.code === 0) { layer.msg(r.msg, {icon: 1}); layer.close(index); reloadTable(); }
+                        else { layer.msg(r.msg, {icon: 2}); }
+                    }
+                });
+            },
+            btn2: function(index) { layer.close(index); }
+        });
+    }
+
+    function getCookie(name) {
+        var r = document.cookie.match("\\b" + name + "=([^;]*)\\b");
+        return r ? r[1] : '';
+    }
+});
+</script>
+{% endblock %}

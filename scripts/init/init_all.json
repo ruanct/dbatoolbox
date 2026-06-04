@@ -1,0 +1,1460 @@
+[
+{
+    "model": "auth.permission",
+    "pk": 1,
+    "fields": {
+        "name": "Can add log entry",
+        "content_type": 1,
+        "codename": "add_logentry"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 2,
+    "fields": {
+        "name": "Can change log entry",
+        "content_type": 1,
+        "codename": "change_logentry"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 3,
+    "fields": {
+        "name": "Can delete log entry",
+        "content_type": 1,
+        "codename": "delete_logentry"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 4,
+    "fields": {
+        "name": "Can view log entry",
+        "content_type": 1,
+        "codename": "view_logentry"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 5,
+    "fields": {
+        "name": "Can add permission",
+        "content_type": 2,
+        "codename": "add_permission"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 6,
+    "fields": {
+        "name": "Can change permission",
+        "content_type": 2,
+        "codename": "change_permission"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 7,
+    "fields": {
+        "name": "Can delete permission",
+        "content_type": 2,
+        "codename": "delete_permission"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 8,
+    "fields": {
+        "name": "Can view permission",
+        "content_type": 2,
+        "codename": "view_permission"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 9,
+    "fields": {
+        "name": "Can add group",
+        "content_type": 3,
+        "codename": "add_group"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 10,
+    "fields": {
+        "name": "Can change group",
+        "content_type": 3,
+        "codename": "change_group"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 11,
+    "fields": {
+        "name": "Can delete group",
+        "content_type": 3,
+        "codename": "delete_group"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 12,
+    "fields": {
+        "name": "Can view group",
+        "content_type": 3,
+        "codename": "view_group"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 13,
+    "fields": {
+        "name": "Can add user",
+        "content_type": 4,
+        "codename": "add_user"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 14,
+    "fields": {
+        "name": "Can change user",
+        "content_type": 4,
+        "codename": "change_user"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 15,
+    "fields": {
+        "name": "Can delete user",
+        "content_type": 4,
+        "codename": "delete_user"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 16,
+    "fields": {
+        "name": "Can view user",
+        "content_type": 4,
+        "codename": "view_user"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 17,
+    "fields": {
+        "name": "Can add content type",
+        "content_type": 5,
+        "codename": "add_contenttype"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 18,
+    "fields": {
+        "name": "Can change content type",
+        "content_type": 5,
+        "codename": "change_contenttype"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 19,
+    "fields": {
+        "name": "Can delete content type",
+        "content_type": 5,
+        "codename": "delete_contenttype"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 20,
+    "fields": {
+        "name": "Can view content type",
+        "content_type": 5,
+        "codename": "view_contenttype"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 21,
+    "fields": {
+        "name": "Can add session",
+        "content_type": 6,
+        "codename": "add_session"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 22,
+    "fields": {
+        "name": "Can change session",
+        "content_type": 6,
+        "codename": "change_session"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 23,
+    "fields": {
+        "name": "Can delete session",
+        "content_type": 6,
+        "codename": "delete_session"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 24,
+    "fields": {
+        "name": "Can view session",
+        "content_type": 6,
+        "codename": "view_session"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 25,
+    "fields": {
+        "name": "Can add 所属业务",
+        "content_type": 7,
+        "codename": "add_business"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 26,
+    "fields": {
+        "name": "Can change 所属业务",
+        "content_type": 7,
+        "codename": "change_business"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 27,
+    "fields": {
+        "name": "Can delete 所属业务",
+        "content_type": 7,
+        "codename": "delete_business"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 28,
+    "fields": {
+        "name": "Can view 所属业务",
+        "content_type": 7,
+        "codename": "view_business"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 29,
+    "fields": {
+        "name": "Can add 所属机房",
+        "content_type": 8,
+        "codename": "add_datacenter"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 30,
+    "fields": {
+        "name": "Can change 所属机房",
+        "content_type": 8,
+        "codename": "change_datacenter"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 31,
+    "fields": {
+        "name": "Can delete 所属机房",
+        "content_type": 8,
+        "codename": "delete_datacenter"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 32,
+    "fields": {
+        "name": "Can view 所属机房",
+        "content_type": 8,
+        "codename": "view_datacenter"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 33,
+    "fields": {
+        "name": "Can add 主机状态",
+        "content_type": 9,
+        "codename": "add_hoststatus"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 34,
+    "fields": {
+        "name": "Can change 主机状态",
+        "content_type": 9,
+        "codename": "change_hoststatus"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 35,
+    "fields": {
+        "name": "Can delete 主机状态",
+        "content_type": 9,
+        "codename": "delete_hoststatus"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 36,
+    "fields": {
+        "name": "Can view 主机状态",
+        "content_type": 9,
+        "codename": "view_hoststatus"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 37,
+    "fields": {
+        "name": "Can add 主机类型",
+        "content_type": 10,
+        "codename": "add_hosttype"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 38,
+    "fields": {
+        "name": "Can change 主机类型",
+        "content_type": 10,
+        "codename": "change_hosttype"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 39,
+    "fields": {
+        "name": "Can delete 主机类型",
+        "content_type": 10,
+        "codename": "delete_hosttype"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 40,
+    "fields": {
+        "name": "Can view 主机类型",
+        "content_type": 10,
+        "codename": "view_hosttype"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 41,
+    "fields": {
+        "name": "Can add OS类型",
+        "content_type": 11,
+        "codename": "add_ostype"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 42,
+    "fields": {
+        "name": "Can change OS类型",
+        "content_type": 11,
+        "codename": "change_ostype"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 43,
+    "fields": {
+        "name": "Can delete OS类型",
+        "content_type": 11,
+        "codename": "delete_ostype"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 44,
+    "fields": {
+        "name": "Can view OS类型",
+        "content_type": 11,
+        "codename": "view_ostype"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 45,
+    "fields": {
+        "name": "Can add 所属环境",
+        "content_type": 12,
+        "codename": "add_environment"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 46,
+    "fields": {
+        "name": "Can change 所属环境",
+        "content_type": 12,
+        "codename": "change_environment"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 47,
+    "fields": {
+        "name": "Can delete 所属环境",
+        "content_type": 12,
+        "codename": "delete_environment"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 48,
+    "fields": {
+        "name": "Can view 所属环境",
+        "content_type": 12,
+        "codename": "view_environment"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 49,
+    "fields": {
+        "name": "Can add Docker容器",
+        "content_type": 13,
+        "codename": "add_dockercontainer"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 50,
+    "fields": {
+        "name": "Can change Docker容器",
+        "content_type": 13,
+        "codename": "change_dockercontainer"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 51,
+    "fields": {
+        "name": "Can delete Docker容器",
+        "content_type": 13,
+        "codename": "delete_dockercontainer"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 52,
+    "fields": {
+        "name": "Can view Docker容器",
+        "content_type": 13,
+        "codename": "view_dockercontainer"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 53,
+    "fields": {
+        "name": "Can add 主机IP",
+        "content_type": 14,
+        "codename": "add_hostip"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 54,
+    "fields": {
+        "name": "Can change 主机IP",
+        "content_type": 14,
+        "codename": "change_hostip"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 55,
+    "fields": {
+        "name": "Can delete 主机IP",
+        "content_type": 14,
+        "codename": "delete_hostip"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 56,
+    "fields": {
+        "name": "Can view 主机IP",
+        "content_type": 14,
+        "codename": "view_hostip"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 57,
+    "fields": {
+        "name": "Can add 虚拟机实例",
+        "content_type": 15,
+        "codename": "add_vminstance"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 58,
+    "fields": {
+        "name": "Can change 虚拟机实例",
+        "content_type": 15,
+        "codename": "change_vminstance"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 59,
+    "fields": {
+        "name": "Can delete 虚拟机实例",
+        "content_type": 15,
+        "codename": "delete_vminstance"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 60,
+    "fields": {
+        "name": "Can view 虚拟机实例",
+        "content_type": 15,
+        "codename": "view_vminstance"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 61,
+    "fields": {
+        "name": "Can add 主机域名",
+        "content_type": 16,
+        "codename": "add_hostdomainname"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 62,
+    "fields": {
+        "name": "Can change 主机域名",
+        "content_type": 16,
+        "codename": "change_hostdomainname"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 63,
+    "fields": {
+        "name": "Can delete 主机域名",
+        "content_type": 16,
+        "codename": "delete_hostdomainname"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 64,
+    "fields": {
+        "name": "Can view 主机域名",
+        "content_type": 16,
+        "codename": "view_hostdomainname"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 65,
+    "fields": {
+        "name": "Can add 主机账号",
+        "content_type": 17,
+        "codename": "add_hostaccount"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 66,
+    "fields": {
+        "name": "Can change 主机账号",
+        "content_type": 17,
+        "codename": "change_hostaccount"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 67,
+    "fields": {
+        "name": "Can delete 主机账号",
+        "content_type": 17,
+        "codename": "delete_hostaccount"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 68,
+    "fields": {
+        "name": "Can view 主机账号",
+        "content_type": 17,
+        "codename": "view_hostaccount"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 69,
+    "fields": {
+        "name": "Can add 硬件信息",
+        "content_type": 18,
+        "codename": "add_hosthardware"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 70,
+    "fields": {
+        "name": "Can change 硬件信息",
+        "content_type": 18,
+        "codename": "change_hosthardware"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 71,
+    "fields": {
+        "name": "Can delete 硬件信息",
+        "content_type": 18,
+        "codename": "delete_hosthardware"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 72,
+    "fields": {
+        "name": "Can view 硬件信息",
+        "content_type": 18,
+        "codename": "view_hosthardware"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 73,
+    "fields": {
+        "name": "Can add 主机",
+        "content_type": 19,
+        "codename": "add_host"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 74,
+    "fields": {
+        "name": "Can change 主机",
+        "content_type": 19,
+        "codename": "change_host"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 75,
+    "fields": {
+        "name": "Can delete 主机",
+        "content_type": 19,
+        "codename": "delete_host"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 76,
+    "fields": {
+        "name": "Can view 主机",
+        "content_type": 19,
+        "codename": "view_host"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 77,
+    "fields": {
+        "name": "Can add 脚本分类",
+        "content_type": 20,
+        "codename": "add_scriptcategory"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 78,
+    "fields": {
+        "name": "Can change 脚本分类",
+        "content_type": 20,
+        "codename": "change_scriptcategory"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 79,
+    "fields": {
+        "name": "Can delete 脚本分类",
+        "content_type": 20,
+        "codename": "delete_scriptcategory"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 80,
+    "fields": {
+        "name": "Can view 脚本分类",
+        "content_type": 20,
+        "codename": "view_scriptcategory"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 81,
+    "fields": {
+        "name": "Can add 脚本仓库",
+        "content_type": 21,
+        "codename": "add_scriptrepository"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 82,
+    "fields": {
+        "name": "Can change 脚本仓库",
+        "content_type": 21,
+        "codename": "change_scriptrepository"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 83,
+    "fields": {
+        "name": "Can delete 脚本仓库",
+        "content_type": 21,
+        "codename": "delete_scriptrepository"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 84,
+    "fields": {
+        "name": "Can view 脚本仓库",
+        "content_type": 21,
+        "codename": "view_scriptrepository"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 85,
+    "fields": {
+        "name": "Can add 批量执行任务",
+        "content_type": 22,
+        "codename": "add_batchtask"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 86,
+    "fields": {
+        "name": "Can change 批量执行任务",
+        "content_type": 22,
+        "codename": "change_batchtask"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 87,
+    "fields": {
+        "name": "Can delete 批量执行任务",
+        "content_type": 22,
+        "codename": "delete_batchtask"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 88,
+    "fields": {
+        "name": "Can view 批量执行任务",
+        "content_type": 22,
+        "codename": "view_batchtask"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 89,
+    "fields": {
+        "name": "Can add 批量执行-主机结果",
+        "content_type": 23,
+        "codename": "add_batchtaskhost"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 90,
+    "fields": {
+        "name": "Can change 批量执行-主机结果",
+        "content_type": 23,
+        "codename": "change_batchtaskhost"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 91,
+    "fields": {
+        "name": "Can delete 批量执行-主机结果",
+        "content_type": 23,
+        "codename": "delete_batchtaskhost"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 92,
+    "fields": {
+        "name": "Can view 批量执行-主机结果",
+        "content_type": 23,
+        "codename": "view_batchtaskhost"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 93,
+    "fields": {
+        "name": "Can add 文件分发-主机结果",
+        "content_type": 24,
+        "codename": "add_filedisttaskhost"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 94,
+    "fields": {
+        "name": "Can change 文件分发-主机结果",
+        "content_type": 24,
+        "codename": "change_filedisttaskhost"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 95,
+    "fields": {
+        "name": "Can delete 文件分发-主机结果",
+        "content_type": 24,
+        "codename": "delete_filedisttaskhost"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 96,
+    "fields": {
+        "name": "Can view 文件分发-主机结果",
+        "content_type": 24,
+        "codename": "view_filedisttaskhost"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 97,
+    "fields": {
+        "name": "Can add 文件分发任务",
+        "content_type": 25,
+        "codename": "add_filedisttask"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 98,
+    "fields": {
+        "name": "Can change 文件分发任务",
+        "content_type": 25,
+        "codename": "change_filedisttask"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 99,
+    "fields": {
+        "name": "Can delete 文件分发任务",
+        "content_type": 25,
+        "codename": "delete_filedisttask"
+    }
+},
+{
+    "model": "auth.permission",
+    "pk": 100,
+    "fields": {
+        "name": "Can view 文件分发任务",
+        "content_type": 25,
+        "codename": "view_filedisttask"
+    }
+},
+{
+    "model": "auth.user",
+    "pk": 1,
+    "fields": {
+        "password": "pbkdf2_sha256$1000000$yDHMSfQXPbjzmia5IUegzN$eidQ48AIr2e7zp/DyAtVPFb77LutiaCe1rordNHoXag=",
+        "last_login": "2026-06-04T16:29:45.548",
+        "is_superuser": true,
+        "username": "admin",
+        "first_name": "",
+        "last_name": "",
+        "email": "",
+        "is_staff": true,
+        "is_active": true,
+        "date_joined": "2026-05-12T20:44:48.730",
+        "groups": [],
+        "user_permissions": []
+    }
+},
+{
+    "model": "contenttypes.contenttype",
+    "pk": 1,
+    "fields": {
+        "app_label": "admin",
+        "model": "logentry"
+    }
+},
+{
+    "model": "contenttypes.contenttype",
+    "pk": 2,
+    "fields": {
+        "app_label": "auth",
+        "model": "permission"
+    }
+},
+{
+    "model": "contenttypes.contenttype",
+    "pk": 3,
+    "fields": {
+        "app_label": "auth",
+        "model": "group"
+    }
+},
+{
+    "model": "contenttypes.contenttype",
+    "pk": 4,
+    "fields": {
+        "app_label": "auth",
+        "model": "user"
+    }
+},
+{
+    "model": "contenttypes.contenttype",
+    "pk": 5,
+    "fields": {
+        "app_label": "contenttypes",
+        "model": "contenttype"
+    }
+},
+{
+    "model": "contenttypes.contenttype",
+    "pk": 6,
+    "fields": {
+        "app_label": "sessions",
+        "model": "session"
+    }
+},
+{
+    "model": "contenttypes.contenttype",
+    "pk": 7,
+    "fields": {
+        "app_label": "common",
+        "model": "business"
+    }
+},
+{
+    "model": "contenttypes.contenttype",
+    "pk": 8,
+    "fields": {
+        "app_label": "common",
+        "model": "datacenter"
+    }
+},
+{
+    "model": "contenttypes.contenttype",
+    "pk": 9,
+    "fields": {
+        "app_label": "common",
+        "model": "hoststatus"
+    }
+},
+{
+    "model": "contenttypes.contenttype",
+    "pk": 10,
+    "fields": {
+        "app_label": "common",
+        "model": "hosttype"
+    }
+},
+{
+    "model": "contenttypes.contenttype",
+    "pk": 11,
+    "fields": {
+        "app_label": "common",
+        "model": "ostype"
+    }
+},
+{
+    "model": "contenttypes.contenttype",
+    "pk": 12,
+    "fields": {
+        "app_label": "common",
+        "model": "environment"
+    }
+},
+{
+    "model": "contenttypes.contenttype",
+    "pk": 13,
+    "fields": {
+        "app_label": "common",
+        "model": "dockercontainer"
+    }
+},
+{
+    "model": "contenttypes.contenttype",
+    "pk": 14,
+    "fields": {
+        "app_label": "common",
+        "model": "hostip"
+    }
+},
+{
+    "model": "contenttypes.contenttype",
+    "pk": 15,
+    "fields": {
+        "app_label": "common",
+        "model": "vminstance"
+    }
+},
+{
+    "model": "contenttypes.contenttype",
+    "pk": 16,
+    "fields": {
+        "app_label": "common",
+        "model": "hostdomainname"
+    }
+},
+{
+    "model": "contenttypes.contenttype",
+    "pk": 17,
+    "fields": {
+        "app_label": "common",
+        "model": "hostaccount"
+    }
+},
+{
+    "model": "contenttypes.contenttype",
+    "pk": 18,
+    "fields": {
+        "app_label": "common",
+        "model": "hosthardware"
+    }
+},
+{
+    "model": "contenttypes.contenttype",
+    "pk": 19,
+    "fields": {
+        "app_label": "common",
+        "model": "host"
+    }
+},
+{
+    "model": "contenttypes.contenttype",
+    "pk": 20,
+    "fields": {
+        "app_label": "common",
+        "model": "scriptcategory"
+    }
+},
+{
+    "model": "contenttypes.contenttype",
+    "pk": 21,
+    "fields": {
+        "app_label": "common",
+        "model": "scriptrepository"
+    }
+},
+{
+    "model": "contenttypes.contenttype",
+    "pk": 22,
+    "fields": {
+        "app_label": "common",
+        "model": "batchtask"
+    }
+},
+{
+    "model": "contenttypes.contenttype",
+    "pk": 23,
+    "fields": {
+        "app_label": "common",
+        "model": "batchtaskhost"
+    }
+},
+{
+    "model": "contenttypes.contenttype",
+    "pk": 24,
+    "fields": {
+        "app_label": "common",
+        "model": "filedisttaskhost"
+    }
+},
+{
+    "model": "contenttypes.contenttype",
+    "pk": 25,
+    "fields": {
+        "app_label": "common",
+        "model": "filedisttask"
+    }
+},
+{
+    "model": "common.hoststatus",
+    "pk": 1,
+    "fields": {
+        "name": "待机"
+    }
+},
+{
+    "model": "common.hoststatus",
+    "pk": 2,
+    "fields": {
+        "name": "上线"
+    }
+},
+{
+    "model": "common.hoststatus",
+    "pk": 3,
+    "fields": {
+        "name": "下线"
+    }
+},
+{
+    "model": "common.hosttype",
+    "pk": 1,
+    "fields": {
+        "name": "物理机"
+    }
+},
+{
+    "model": "common.hosttype",
+    "pk": 2,
+    "fields": {
+        "name": "云主机"
+    }
+},
+{
+    "model": "common.hosttype",
+    "pk": 3,
+    "fields": {
+        "name": "裸金属"
+    }
+},
+{
+    "model": "common.hosttype",
+    "pk": 4,
+    "fields": {
+        "name": "虚拟机"
+    }
+},
+{
+    "model": "common.datacenter",
+    "pk": 1,
+    "fields": {
+        "name": "世纪互联"
+    }
+},
+{
+    "model": "common.datacenter",
+    "pk": 2,
+    "fields": {
+        "name": "阿里云"
+    }
+},
+{
+    "model": "common.datacenter",
+    "pk": 3,
+    "fields": {
+        "name": "腾讯云"
+    }
+},
+{
+    "model": "common.datacenter",
+    "pk": 4,
+    "fields": {
+        "name": "华为云"
+    }
+},
+{
+    "model": "common.business",
+    "pk": 1,
+    "fields": {
+        "name": "环球云"
+    }
+},
+{
+    "model": "common.business",
+    "pk": 2,
+    "fields": {
+        "name": "云商城"
+    }
+},
+{
+    "model": "common.business",
+    "pk": 3,
+    "fields": {
+        "name": "财务NC"
+    }
+},
+{
+    "model": "common.business",
+    "pk": 4,
+    "fields": {
+        "name": "办公OA"
+    }
+},
+{
+    "model": "common.ostype",
+    "pk": 1,
+    "fields": {
+        "name": "Windows"
+    }
+},
+{
+    "model": "common.ostype",
+    "pk": 2,
+    "fields": {
+        "name": "Ubuntu"
+    }
+},
+{
+    "model": "common.ostype",
+    "pk": 3,
+    "fields": {
+        "name": "Redhat"
+    }
+},
+{
+    "model": "common.ostype",
+    "pk": 4,
+    "fields": {
+        "name": "Centos"
+    }
+},
+{
+    "model": "common.ostype",
+    "pk": 5,
+    "fields": {
+        "name": "Oracle"
+    }
+},
+{
+    "model": "common.environment",
+    "pk": 1,
+    "fields": {
+        "code": "prod",
+        "name": "生产环境"
+    }
+},
+{
+    "model": "common.environment",
+    "pk": 2,
+    "fields": {
+        "code": "pre",
+        "name": "预发环境"
+    }
+},
+{
+    "model": "common.environment",
+    "pk": 3,
+    "fields": {
+        "code": "test",
+        "name": "测试环境"
+    }
+},
+{
+    "model": "common.environment",
+    "pk": 4,
+    "fields": {
+        "code": "dev",
+        "name": "开发环境"
+    }
+},
+{
+    "model": "common.scriptcategory",
+    "pk": 1,
+    "fields": {
+        "name": "系统运维",
+        "parent": null,
+        "sort_order": 0,
+        "remark": "",
+        "created_at": "2026-05-16T19:10:44.736",
+        "updated_at": "2026-05-16T19:10:44.736"
+    }
+},
+{
+    "model": "common.scriptcategory",
+    "pk": 2,
+    "fields": {
+        "name": "日常运维",
+        "parent": 1,
+        "sort_order": 1,
+        "remark": "",
+        "created_at": "2026-05-16T19:11:06.382",
+        "updated_at": "2026-05-17T10:16:28.085"
+    }
+},
+{
+    "model": "common.scriptcategory",
+    "pk": 3,
+    "fields": {
+        "name": "系统优化",
+        "parent": 1,
+        "sort_order": 2,
+        "remark": "",
+        "created_at": "2026-05-16T19:26:53.483",
+        "updated_at": "2026-05-17T10:17:23.755"
+    }
+},
+{
+    "model": "common.scriptcategory",
+    "pk": 4,
+    "fields": {
+        "name": "安全加固",
+        "parent": 1,
+        "sort_order": 3,
+        "remark": "",
+        "created_at": "2026-05-16T19:28:13.286",
+        "updated_at": "2026-05-17T10:16:42.884"
+    }
+},
+{
+    "model": "common.scriptcategory",
+    "pk": 5,
+    "fields": {
+        "name": "系统监控",
+        "parent": 1,
+        "sort_order": 4,
+        "remark": "",
+        "created_at": "2026-05-16T19:28:51.352",
+        "updated_at": "2026-05-17T10:18:05.312"
+    }
+},
+{
+    "model": "common.scriptcategory",
+    "pk": 6,
+    "fields": {
+        "name": "进程管理",
+        "parent": 1,
+        "sort_order": 5,
+        "remark": "",
+        "created_at": "2026-05-16T19:29:14.187",
+        "updated_at": "2026-05-17T10:18:09.139"
+    }
+},
+{
+    "model": "common.scriptcategory",
+    "pk": 10,
+    "fields": {
+        "name": "ORACLE运维",
+        "parent": null,
+        "sort_order": 10,
+        "remark": "",
+        "created_at": "2026-05-17T10:06:38.531",
+        "updated_at": "2026-05-17T10:09:58.282"
+    }
+},
+{
+    "model": "common.scriptcategory",
+    "pk": 11,
+    "fields": {
+        "name": "ORA-安装部署",
+        "parent": 10,
+        "sort_order": 11,
+        "remark": "",
+        "created_at": "2026-05-16T19:36:16.104",
+        "updated_at": "2026-05-16T20:47:49.147"
+    }
+},
+{
+    "model": "common.scriptcategory",
+    "pk": 12,
+    "fields": {
+        "name": "ORA-运维诊断",
+        "parent": 10,
+        "sort_order": 12,
+        "remark": "",
+        "created_at": "2026-05-16T19:38:07.558",
+        "updated_at": "2026-05-17T09:59:06.940"
+    }
+},
+{
+    "model": "common.scriptcategory",
+    "pk": 13,
+    "fields": {
+        "name": "ORA-数据同步",
+        "parent": 10,
+        "sort_order": 13,
+        "remark": "",
+        "created_at": "2026-05-16T19:38:24.323",
+        "updated_at": "2026-05-17T09:59:21.486"
+    }
+},
+{
+    "model": "common.scriptcategory",
+    "pk": 14,
+    "fields": {
+        "name": "ORA-高可用",
+        "parent": 10,
+        "sort_order": 14,
+        "remark": "",
+        "created_at": "2026-05-16T19:38:36.008",
+        "updated_at": "2026-05-17T10:18:26.258"
+    }
+},
+{
+    "model": "common.scriptcategory",
+    "pk": 15,
+    "fields": {
+        "name": "ORA-备份恢复",
+        "parent": 10,
+        "sort_order": 15,
+        "remark": "",
+        "created_at": "2026-05-16T19:39:07.606",
+        "updated_at": "2026-05-17T09:59:37.040"
+    }
+},
+{
+    "model": "common.scriptcategory",
+    "pk": 16,
+    "fields": {
+        "name": "ORA-日常巡检",
+        "parent": 10,
+        "sort_order": 16,
+        "remark": "",
+        "created_at": "2026-05-16T19:39:23.625",
+        "updated_at": "2026-05-17T09:59:55.243"
+    }
+},
+{
+    "model": "common.scriptcategory",
+    "pk": 17,
+    "fields": {
+        "name": "ORA-监控告警",
+        "parent": 10,
+        "sort_order": 17,
+        "remark": "",
+        "created_at": "2026-05-16T19:39:55.718",
+        "updated_at": "2026-05-17T10:00:09.820"
+    }
+}
+]

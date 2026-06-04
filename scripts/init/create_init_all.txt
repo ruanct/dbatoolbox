@@ -1,0 +1,28 @@
+
+# 1. 导出基础数据
+
+## 排除不需要导出的表
+python3 manage.py dumpdata --indent 4 \
+ --exclude common.FileDistTask \
+ --exclude common.FileDistTaskHost \
+ --exclude common.BatchTask \
+ --exclude common.BatchTaskHost \
+ --exclude common.Host \
+ --exclude common.HostAccount \
+ --exclude common.HostDomainName \
+ --exclude common.HostHardware \
+ --exclude common.HostIP \
+ --exclude common.VmInstance \
+ --exclude common.ScriptRepository \
+ --exclude common.DockerContainer \
+ --exclude sessions.session > scripts/init/init_all.json
+
+# 2. 导入到新环境
+
+## 先执行migrate建表
+python manage.py migrate
+
+## 导入初始化数据
+python manage.py loaddata scripts/init/init_all.json
+
+
