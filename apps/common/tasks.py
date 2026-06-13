@@ -40,14 +40,29 @@ def _build_inventory(host_ids):
         line = (
             f'{host.hostname} ansible_host={ip_addr} ansible_user={user} '
             f'ansible_ssh_pass="{pswd}" ansible_port={port} '
-            f'ansible_ssh_args="-C -o ControlMaster=auto"'
-            f' ansible_ssh_common_args="-o StrictHostKeyChecking=no'
-            f' -o UserKnownHostsFile=/dev/null -o HostKeyAlgorithms=+ssh-rsa,ssh-dss'
-            f' -o ServerAliveInterval=30"'
+            f'ansible_ssh_common_args="-o StrictHostKeyChecking=no'
+            f' -o UserKnownHostsFile=/dev/null'
+            f' -o HostKeyAlgorithms=+ssh-rsa,ssh-dss'
+            f' -o ServerAliveInterval=30'
+            f' -o ConnectTimeout=15"'
         )
         lines.append(line)
         hosts[host.hostname] = host.id
     return "\n".join(lines), hosts
+
+
+def _format_delta(delta_str):
+    """ansible delta 格式 '0:00:01.665556' → '0:00:01.665'"""
+    if not delta_str:
+        return ""
+    try:
+        parts = delta_str.rsplit(".", 1)
+        if len(parts) == 2:
+            micro = parts[1][:3]  # 取小数点后3位
+            return f"{parts[0]}.{micro}"
+        return delta_str
+    except Exception:
+        return delta_str
 
 
 # 项目根目录下的自定义 callback 插件路径
@@ -94,7 +109,7 @@ def _run_ansible_ad_hoc(inventory_content, script_path):
         os.unlink(inv_path)
 
 
-def _run_ansible_playbook(inventory_content, script_path):
+def _run_ansible_playbook(inventory_content, script_path, forks=5):
     """通过 ansible-playbook + 自定义 JSON callback 执行脚本"""
     with tempfile.NamedTemporaryFile(mode="w", suffix=".ini", delete=False, encoding="utf-8") as f:
         f.write(inventory_content)
@@ -119,7 +134,9 @@ def _run_ansible_playbook(inventory_content, script_path):
             env["ANSIBLE_CALLBACK_PLUGINS"] = _CALLBACK_PLUGINS_DIR
 
             cmd = [
-                "ansible-playbook", "-i", inv_path, playbook_path,
+                "ansible-playbook", "-i", inv_path,
+                "-f", str(forks),
+                playbook_path,
             ]
             proc = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=600,
@@ -179,38 +196,71 @@ def run_batch_task(self, task_id):
                 return
 
             # 两个方法都行: _run_ansible_ad_hoc OR _run_ansible_playbook
-            result = _run_ansible_playbook(inv_content, script_path)
+            result = _run_ansible_playbook(inv_content, script_path, forks=task.forks)
             
-            # 解析结果
+            # 解析结果：合并多 task 结果，每个 host 只保留最后一个 task 的结果
             success_count = 0
             fail_count = 0
 
             if "plays" in result:
+                # 先收集所有 (host_id → host_result)，后出现的覆盖前面的
+                merged = {}
                 for play in result.get("plays", []):
                     for t in play.get("tasks", []):
                         for hostname, host_result in t.get("hosts", {}).items():
                             host_id = hostname_map.get(hostname)
-                            if not host_id:
-                                continue
-                            unreachable = host_result.get("unreachable", False)
-                            rc = host_result.get("rc")
-                            is_ok = (not unreachable) and (rc == 0)
-                            out_parts = []
-                            if is_ok and host_result.get("stdout"):
-                                out_parts.append(host_result["stdout"])
-                            if not is_ok and host_result.get("stderr"):
-                                out_parts.append(host_result["stderr"])
-                            if not is_ok and host_result.get("msg"):
-                                out_parts.append(host_result["msg"])
-                            output = "\n".join(out_parts)
-                            st = "success" if is_ok else "failed"
-                            BatchTaskHost.objects.filter(task_id=task_id, host_id=host_id).update(
-                                status=st, output=output, finished_at=timezone.now(),
-                            )
-                            if is_ok:
-                                success_count += 1
-                            else:
-                                fail_count += 1
+                            if host_id:
+                                merged[host_id] = host_result
+
+                # 逐 host 处理
+                for host_id, host_result in merged.items():
+                    unreachable = host_result.get("unreachable", False)
+                    rc = host_result.get("rc")
+                    if rc is not None:
+                        is_ok = (not unreachable) and (rc == 0)
+                    else:
+                        is_ok = (not unreachable) and not host_result.get("failed", False)
+
+                    out_parts = []
+                    if host_result.get("stdout"):
+                        out_parts.append(host_result["stdout"])
+                    if host_result.get("stderr"):
+                        out_parts.append(host_result["stderr"])
+                    if host_result.get("msg"):
+                        out_parts.append(host_result["msg"])
+                    output = "\n".join(out_parts)
+                    st = "success" if is_ok else "failed"
+
+                    # 从 ansible 结果取 start/end/delta（callback 保证始终有值）
+                    start_str = host_result.get("start", "")
+                    end_str = host_result.get("end", "")
+                    delta_str = host_result.get("delta", "")
+                    # output += "\nstart: {} end:{} delta:{}".format(start_str, end_str, delta_str)
+                    
+                    host_started = now
+                    host_finished = timezone.now()
+                    if start_str:
+                        try:
+                            host_started = timezone.datetime.fromisoformat(start_str)
+                        except (ValueError, TypeError):
+                            pass
+                    if end_str:
+                        try:
+                            host_finished = timezone.datetime.fromisoformat(end_str)
+                        except (ValueError, TypeError):
+                            pass
+                    duration = _format_delta(delta_str)
+
+                    BatchTaskHost.objects.filter(task_id=task_id, host_id=host_id).update(
+                        status=st, output=output,
+                        started_at=host_started,
+                        finished_at=host_finished,
+                        duration=duration,
+                    )
+                    if is_ok:
+                        success_count += 1
+                    else:
+                        fail_count += 1
             else:
                 # ansible 返回非 JSON 输出（连接级错误如缺少 sshpass）
                 raw = result.get("_raw", "")

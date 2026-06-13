@@ -57,15 +57,16 @@ layui.use(['table', 'layer', 'form'], function() {
             {field: 'id', title: 'ID', width: 30},
             {field: 'script__name', title: '执行脚本', width: 260},
             {field: 'script_type__display', title: '脚本类型', width: 90},
+            {field: 'forks', title: '并发', width: 60},
             {field: 'status__display', title: '任务状态', width: 90, templet: '#status-tpl'},
-            {field: 'progress', title: '执行(成功/失败/总数)', width: 160, templet: function(d) {
+            {field: 'progress', title: '执行(成功/失败/总数)', width: 170, templet: function(d) {
                 return (d.success_count || 0) + ' / ' + (d.fail_count || 0) + ' / ' + (d.total_count || 0);
             }},
-            {field: 'creator', title: '创建人', width: 80},
             {field: 'created_at', title: '创建时间', width: 170, templet: function(d) {
                 return d.created_at ? d.created_at.substring(0, 19).replace('T', ' ') : '';
             }},
             {field: 'remark', title: '备注', width: 100},
+            {field: 'creator', title: '创建人', width: 80},
             {title: '操作', width: 120, toolbar: '#action-bar'}
         ]],
         defaultToolbar: [],
@@ -127,10 +128,12 @@ layui.use(['table', 'layer', 'form'], function() {
             + '<div class="layui-input-block" style="margin-left:110px;max-height:260px;overflow:auto;border:1px solid #e6e6e6;border-radius:2px;padding:8px 12px;">'
             + '<div><a href="javascript:;" id="check-all" style="font-size:12px;">全选</a> / <a href="javascript:;" id="uncheck-all" style="font-size:12px;">取消</a></div>'
             + hostChecks + '</div></div>'
-            + '<div class="layui-form-item"><label class="layui-form-label" style="width:80px;">创建人</label>'
-            + '<div class="layui-input-block" style="margin-left:110px;"><input type="text" id="dlg-creator" class="layui-input"></div></div>'
+            + '<div class="layui-form-item"><label class="layui-form-label" style="width:80px;">并发数</label>'
+            + '<div class="layui-input-block" style="margin-left:110px;"><input type="number" id="dlg-forks" class="layui-input" value="5" min="1" max="50"></div></div>'
             + '<div class="layui-form-item"><label class="layui-form-label" style="width:80px;">备注</label>'
             + '<div class="layui-input-block" style="margin-left:110px;"><input type="text" id="dlg-remark" class="layui-input"></div></div>'
+            + '<div class="layui-form-item"><label class="layui-form-label" style="width:80px;">创建人</label>'
+            + '<div class="layui-input-block" style="margin-left:110px;"><input type="text" id="dlg-creator" class="layui-input"></div></div>'
             + '</div></div>';
 
         layer.open({
@@ -151,6 +154,7 @@ layui.use(['table', 'layer', 'form'], function() {
                 var payload = {
                     script_id: parseInt(scriptId),
                     host_ids: checkedHosts,
+                    forks: parseInt($('#dlg-forks').val()) || 5,
                     creator: $('#dlg-creator').val().trim(),
                     remark: $('#dlg-remark').val().trim()
                 };
@@ -204,9 +208,13 @@ layui.use(['table', 'layer', 'form'], function() {
                 var d = r.data;
                 function fmtTs(ts) { return ts ? ts.substring(0, 19).replace('T', ' ') : ''; }
                 var html = '<table class="layui-table" style="margin:0;"><tbody>'
-                    + '<tr><td style="width:90px;text-align:right;font-weight:bold;">执行脚本</td><td>' + d.script__name + ' (' + d.script_type__display + ')</td>'
-                    + '<td style="width:90px;text-align:right;font-weight:bold;">任务状态</td><td>' + d.status__display + '</td></tr>'
+                    + '<tr><td style="width:90px;text-align:right;font-weight:bold;">执行脚本</td>'
+                    + '<td style="width:250px;text-align:center;">' + d.script__name + ' (' + d.script_type__display + ')</td>'
+                    + '<td style="width:90px;text-align:right;font-weight:bold;">任务状态</td>'
+                    + '<td style="width:250px;text-align:center;">' + d.status__display + '</td></tr>'
                     + '<tr><td style="text-align:right;font-weight:bold;">进度</td><td>成功 ' + d.success_count + ' / 失败 ' + d.fail_count + ' / 共 ' + d.total_count + ' 台</td>'
+                    + '<td style="text-align:right;font-weight:bold;">并发数</td><td>' + (d.forks || 5) + '</td></tr>'
+                    + '<tr><td style="text-align:right;font-weight:bold;">备注</td><td>' + (d.remark) + '</td>'
                     + '<td style="text-align:right;font-weight:bold;">创建人</td><td>' + (d.creator || '') + '</td></tr>'
                     + '<tr><td style="text-align:right;font-weight:bold;">开始时间</td><td>' + fmtTs(d.started_at) + '</td>'
                     + '<td style="text-align:right;font-weight:bold;">结束时间</td><td>' + fmtTs(d.finished_at) + '</td></tr>'
@@ -215,6 +223,7 @@ layui.use(['table', 'layer', 'form'], function() {
                 if (d.hosts && d.hosts.length > 0) {
                     html += '<table class="layui-table" style="margin-top:10px;"><thead><tr>'
                         + '<th style="width:80px;">主机</th><th style="width:80px;">IP</th><th style="width:60px;">状态</th>'
+                        + '<th style="width:65px;">耗时</th>'
                         + '<th style="width:80px;">开始时间</th><th style="width:80px;">结束时间</th><th>执行输出</th>'
                         + '</tr></thead><tbody>';
                     for (var i = 0; i < d.hosts.length; i++) {
@@ -224,6 +233,7 @@ layui.use(['table', 'layer', 'form'], function() {
                             + '<td>' + h.host__display + '</td>'
                             + '<td>' + (h.host_ip || '') + '</td>'
                             + '<td><span style="color:' + stColor + ';">' + h.status__display + '</span></td>'
+                            + '<td>' + (h.duration || '') + '</td>'
                             + '<td>' + fmtTs(h.started_at) + '</td>'
                             + '<td>' + fmtTs(h.finished_at) + '</td>'
                             + '<td><pre style="margin:0;padding:4px;background:#f5f5f5;border-radius:2px;max-height:120px;overflow:auto;font-size:12px;white-space:pre-wrap;text-align:left;">' + (h.output || '') + '</pre></td>'

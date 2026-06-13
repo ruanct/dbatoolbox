@@ -393,6 +393,7 @@ class BatchTask(models.Model):
         max_length=16, choices=TASK_STATUS_CHOICES, default="pending",
         verbose_name="任务状态",
     )
+    forks = models.IntegerField(default=5, verbose_name="并发数")
     total_count = models.IntegerField(default=0, verbose_name="主机总数")
     success_count = models.IntegerField(default=0, verbose_name="成功数")
     fail_count = models.IntegerField(default=0, verbose_name="失败数")
@@ -433,6 +434,7 @@ class BatchTaskHost(models.Model):
         verbose_name="执行状态",
     )
     output = models.TextField(blank=True, default="", verbose_name="执行输出")
+    duration = models.CharField(max_length=32, blank=True, default="", verbose_name="执行耗时")
     started_at = models.DateTimeField(null=True, blank=True, verbose_name="开始时间")
     finished_at = models.DateTimeField(null=True, blank=True, verbose_name="结束时间")
 

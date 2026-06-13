@@ -350,6 +350,7 @@ def _serialize_batch_task(obj):
         "script_type__display": SCRIPT_TYPE_LABELS.get(obj.script.script_type, obj.script.script_type),
         "status": obj.status,
         "status__display": BATCH_TASK_STATUS_LABELS.get(obj.status, obj.status),
+        "forks": obj.forks,
         "total_count": obj.total_count,
         "success_count": obj.success_count,
         "fail_count": obj.fail_count,
@@ -373,6 +374,7 @@ def _serialize_batch_host(obj):
         "status": obj.status,
         "status__display": BATCH_HOST_STATUS_LABELS.get(obj.status, obj.status),
         "output": obj.output,
+        "duration": obj.duration,
         "started_at": obj.started_at.isoformat() if obj.started_at else "",
         "finished_at": obj.finished_at.isoformat() if obj.finished_at else "",
     }
@@ -440,8 +442,10 @@ def _batch_task_create(request):
         script = ScriptRepository.objects.get(id=script_id, status="enabled")
     except ScriptRepository.DoesNotExist:
         return JsonResponse({"code": 1, "msg": "脚本不存在或已停用"}, status=400)
+    forks = int(body.get("forks", 5) or 5)
     task = BatchTask.objects.create(
         script=script,
+        forks=forks,
         total_count=len(host_ids),
         creator=body.get("creator", "").strip(),
         remark=body.get("remark", "").strip(),
@@ -476,7 +480,7 @@ def batch_execute_detail_api(request, task_id):
     except BatchTask.DoesNotExist:
         return JsonResponse({"code": 1, "msg": "任务不存在"}, status=404)
     task_data = _serialize_batch_task(task)
-    host_list = BatchTaskHost.objects.filter(task_id=task_id).select_related("host").order_by("id")
+    host_list = BatchTaskHost.objects.filter(task_id=task_id).select_related("host").order_by("-finished_at")
     task_data["hosts"] = [_serialize_batch_host(h) for h in host_list]
     return JsonResponse({"code": 0, "msg": "", "data": task_data})
 
