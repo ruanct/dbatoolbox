@@ -9,7 +9,7 @@ class Migration(migrations.Migration):
     initial = True
 
     dependencies = [
-        ('common', '0014_add_batch_forks_duration'),
+        ('common', '0015_sync_dockercontainer_image_name_state'),
     ]
 
     operations = [
