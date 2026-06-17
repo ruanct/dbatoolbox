@@ -1,0 +1,323 @@
+{% extends "base.html" %}
+{% block title %}DB实例维护 - DBAToolbox{% endblock %}
+
+{% block content %}
+<div class="breadcrumb">数据库管理 / DB实例维护</div>
+
+<div class="layui-card">
+    <div class="layui-card-header"><span>数据库实例列表</span></div>
+    <div class="layui-card-body">
+        <div class="layui-form layui-form-item" style="margin-bottom:10px;">
+            <div class="layui-inline">
+                <input type="text" id="search-keyword" placeholder="实例名/连接地址/库名搜索" class="layui-input" style="width:280px;">
+            </div>
+            <button class="layui-btn" id="btn-search"><i class="layui-icon layui-icon-search"></i> 搜索</button>
+            <button class="layui-btn layui-btn-normal" id="btn-add"><i class="layui-icon layui-icon-add-1"></i> 添加</button>
+        </div>
+        <table id="main-table" lay-filter="main-table"></table>
+    </div>
+</div>
+
+<script type="text/html" id="action-bar">
+    <a class="layui-btn layui-btn-xs layui-btn-warm" lay-event="hosts">节点</a>
+    <a class="layui-btn layui-btn-xs" lay-event="accounts">账号</a>
+    <a class="layui-btn layui-btn-xs layui-btn-normal" lay-event="edit">修改</a>
+    <a class="layui-btn layui-btn-xs layui-btn-danger" lay-event="del">删除</a>
+</script>
+
+{% verbatim %}
+<script type="text/html" id="ssl-tpl">
+    {{# if(d.is_ssl) { }}<span style="color:#5fb878;">是</span>{{# } else { }}<span style="color:#999;">否</span>{{# } }}
+</script>
+{% endverbatim %}
+{% endblock %}
+
+{% block extra_script %}
+<script>
+var environments = {{ environments|safe }};
+var businesses = {{ businesses|safe }};
+var replicationClusters = {{ replication_clusters|safe }};
+var engines = {{ engines|safe }};
+var topologies = {{ topologies|safe }};
+var clusterStyles = {{ cluster_styles|safe }};
+var roles = {{ roles|safe }};
+var statuses = {{ statuses|safe }};
+
+var DEFAULT_PORTS = {mysql: 3306, postgresql: 5432, oracle: 1521, mssql: 1433};
+
+var ENGINE_CLUSTER_STYLES = {
+    oracle: ['rac'],
+    mysql: ['galera', 'mysql_vip', 'proxysql', 'innodb_cluster', 'mgr'],
+    postgresql: ['patroni', 'pg_vip', 'repmgr'],
+    mssql: ['alwayson', 'fci']
+};
+
+function filterClusterStyles(engine, topology) {
+    if (topology !== 'ha_cluster') {
+        return [];
+    }
+    var allowed = ENGINE_CLUSTER_STYLES[engine] || [];
+    return clusterStyles.filter(function(item) {
+        return allowed.indexOf(item.value) >= 0;
+    });
+}
+
+function buildClusterStyleSelect(engine, topology, currentVal) {
+    var list = filterClusterStyles(engine, topology);
+    var placeholder = topology === 'ha_cluster' ? '请选择' : '无';
+    if (topology !== 'ha_cluster') {
+        currentVal = '';
+    } else if (!currentVal && list.length === 1) {
+        currentVal = list[0].value;
+    }
+    return buildSelect('f-cluster-style', list, currentVal, placeholder);
+}
+
+function ajaxShowResult(r, index, reloadFn) {
+    if (r.code === 0) {
+        layer.msg(r.msg, {icon: 1});
+        if (index !== undefined) layer.close(index);
+        if (reloadFn) reloadFn();
+    } else {
+        layer.msg(r.msg || '操作失败', {icon: 2});
+    }
+}
+
+function ajaxShowError(xhr) {
+    var r = xhr.responseJSON || {};
+    layer.msg(r.msg || '请求失败', {icon: 2});
+}
+
+function buildSelect(name, list, currentVal, placeholder, valueField, labelField) {
+    valueField = valueField || 'value';
+    labelField = labelField || 'label';
+    var s = '<select name="' + name + '" lay-ignore style="width:100%;height:38px;border:1px solid #e6e6e6;border-radius:2px;padding:0 8px;">'
+        + '<option value="">' + (placeholder || '请选择') + '</option>';
+    for (var i = 0; i < list.length; i++) {
+        var val = list[i][valueField];
+        var sel = (String(val) === String(currentVal)) ? ' selected' : '';
+        s += '<option value="' + val + '"' + sel + '>' + list[i][labelField] + '</option>';
+    }
+    s += '</select>';
+    return s;
+}
+
+function buildClusterSelect(currentVal, engine) {
+    var list = replicationClusters.filter(function(c) {
+        return !engine || c.engine === engine;
+    });
+    return buildSelect('f-replication-cluster', list, currentVal, '无', 'id', 'name');
+}
+
+function boolSelect(id, val) {
+    return '<select id="' + id + '" lay-ignore style="width:100%;height:38px;border:1px solid #e6e6e6;border-radius:2px;padding:0 8px;">'
+        + '<option value="1"' + (val ? ' selected' : '') + '>是</option>'
+        + '<option value="0"' + (!val ? ' selected' : '') + '>否</option></select>';
+}
+
+layui.use(['table', 'layer'], function() {
+    var table = layui.table;
+    var layer = layui.layer;
+
+    var tableIns = table.render({
+        elem: '#main-table',
+        url: '/db-instance/api/',
+        page: true,
+        limit: 10,
+        limits: [10, 20, 50, 100],
+        cols: [[
+            {field: 'id', title: 'ID', width: 70},
+            {field: 'instance_name', title: '实例名称', width: 160},
+            {field: 'engine__display', title: '类型', width: 90},
+            {field: 'topology__display', title: '拓扑', width: 100},
+            {field: 'role__display', title: '角色', width: 70},
+            {field: 'connect_host', title: '连接地址', width: 140},
+            {field: 'port', title: '端口', width: 70},
+            {field: 'db_name', title: '默认库', width: 100},
+            {field: 'status__display', title: '状态', width: 80},
+            {field: 'environment__display', title: '环境', width: 90},
+            {field: 'business__display', title: '业务', width: 90},
+            {field: 'replication_cluster__display', title: '复制集', width: 120},
+            {field: 'default_account_name', title: '默认账号', width: 100},
+            {field: 'is_ssl', title: 'SSL', width: 60, templet: '#ssl-tpl'},
+            {title: '操作', width: 220, toolbar: '#action-bar', fixed: 'right'}
+        ]],
+        defaultToolbar: [],
+        request: {pageName: 'page', limitName: 'limit'},
+        response: {statusCode: 0, countName: 'count', dataName: 'data'},
+        parseData: function(res) {
+            return {code: res.code, msg: res.msg, count: res.count, data: res.data};
+        }
+    });
+
+    function reloadTable() {
+        tableIns.reload({where: {keyword: $('#search-keyword').val()}});
+    }
+
+    $('#btn-search').click(reloadTable);
+    $('#search-keyword').keydown(function(e) { if (e.keyCode === 13) reloadTable(); });
+
+    table.on('tool(main-table)', function(obj) {
+        if (obj.event === 'hosts') {
+            window.location.href = '/db-instance-host/?instance_id=' + obj.data.id;
+        } else if (obj.event === 'accounts') {
+            window.location.href = '/db-account/?instance_id=' + obj.data.id;
+        } else if (obj.event === 'del') {
+            layer.confirm('确认删除该数据库实例？关联账号与部署节点将一并删除。', {icon: 3}, function(idx) {
+                $.ajax({
+                    url: '/db-instance/api/',
+                    type: 'DELETE',
+                    contentType: 'application/json',
+                    data: JSON.stringify({id: obj.data.id}),
+                    headers: {'X-CSRFToken': getCookie('csrftoken_dbatoolbox')},
+                    success: function(r) {
+                        if (r.code === 0) { layer.msg(r.msg, {icon: 1}); reloadTable(); }
+                        else { layer.msg(r.msg, {icon: 2}); }
+                    },
+                    error: ajaxShowError
+                });
+                layer.close(idx);
+            });
+        } else if (obj.event === 'edit') {
+            openForm('修改数据库实例', obj.data);
+        }
+    });
+
+    $('#btn-add').click(function() { openForm('添加数据库实例'); });
+
+    function openForm(title, data) {
+        data = data || {};
+        var portVal = data.port || '';
+        var html = '<div style="padding:15px 20px 5px;max-height:520px;overflow-y:auto;">'
+            + '<form class="layui-form">'
+            + '<input type="hidden" id="obj-id" value="' + (data.id || '') + '">'
+            + '<table class="layui-table" style="margin:0;"><tbody>'
+            + '<tr>'
+                + '<td style="width:14%;text-align:right;">实例名称</td><td style="width:19%;"><input type="text" id="f-instance-name" class="layui-input" value="' + (data.instance_name || '') + '"></td>'
+                + '<td style="width:14%;text-align:right;">数据库类型</td><td style="width:19%;">' + buildSelect('f-engine', engines, data.engine, '请选择') + '</td>'
+                + '<td style="width:14%;text-align:right;">部署拓扑</td><td style="width:19%;">' + buildSelect('f-topology', topologies, data.topology || 'standalone', '请选择') + '</td>'
+            + '</tr>'
+            + '<tr>'
+                + '<td style="text-align:right;">集群类型</td><td id="td-cluster-style">' + buildClusterStyleSelect(data.engine, data.topology || 'standalone', data.cluster_style) + '</td>'
+                + '<td style="text-align:right;">实例角色</td><td>' + buildSelect('f-role', roles, data.role || 'master', '请选择') + '</td>'
+                + '<td style="text-align:right;">运行状态</td><td>' + buildSelect('f-status', statuses, data.status || 'online', '请选择') + '</td>'
+            + '</tr>'
+            + '<tr>'
+                + '<td style="text-align:right;">所属环境</td><td>' + buildSelect('f-environment', environments, data.environment_id, '请选择', 'id', 'name') + '</td>'
+                + '<td style="text-align:right;">所属业务</td><td>' + buildSelect('f-business', businesses, data.business_id, '请选择', 'id', 'name') + '</td>'
+                + '<td style="text-align:right;" class="replication-cluster-label">所属复制集</td><td id="td-replication-cluster">' + buildClusterSelect(data.replication_cluster_id, data.engine) + '</td>'
+            + '</tr>'
+            + '<tr>'
+                + '<td style="text-align:right;">连接地址</td><td><input type="text" id="f-connect-host" class="layui-input" value="' + (data.connect_host || '') + '"></td>'
+                + '<td style="text-align:right;">连接端口</td><td><input type="number" id="f-port" class="layui-input" value="' + portVal + '" placeholder="留空按类型默认"></td>'
+                + '<td style="text-align:right;">版本号</td><td><input type="text" id="f-version" class="layui-input" value="' + (data.version || '') + '"></td>'
+            + '</tr>'
+            + '<tr>'
+                + '<td style="text-align:right;">只读地址</td><td><input type="text" id="f-read-host" class="layui-input" value="' + (data.read_connect_host || '') + '"></td>'
+                + '<td style="text-align:right;">只读端口</td><td><input type="number" id="f-read-port" class="layui-input" value="' + (data.read_port || '') + '"></td>'
+                + '<td style="text-align:right;">启用SSL</td><td>' + boolSelect('f-is-ssl', !!data.is_ssl) + '</td>'
+            + '</tr>'
+            + '<tr>'
+                + '<td style="text-align:right;">默认库名</td><td><input type="text" id="f-db-name" class="layui-input" value="' + (data.db_name || '') + '"></td>'
+                + '<td style="text-align:right;">字符集</td><td><input type="text" id="f-charset" class="layui-input" value="' + (data.charset || '') + '"></td>'
+                + '<td style="text-align:right;">Oracle SID</td><td><input type="text" id="f-sid" class="layui-input" value="' + (data.sid || '') + '"></td>'
+            + '</tr>'
+            + '<tr>'
+                + '<td style="text-align:right;">Service Name</td><td colspan="5"><input type="text" id="f-service-name" class="layui-input" value="' + (data.service_name || '') + '"></td>'
+            + '</tr>'
+            + '<tr>'
+                + '<td style="text-align:right;">备注</td><td colspan="5"><input type="text" id="f-remark" class="layui-input" value="' + (data.remark || '') + '"></td>'
+            + '</tr>'
+            + '</tbody></table></form></div>';
+
+        var layerIdx = layer.open({
+            type: 1,
+            title: title,
+            area: ['1050px', '580px'],
+            content: html,
+            btn: ['保存', '取消'],
+            success: function() {
+                function onEngineOrTopologyChange() {
+                    var eng = $('select[name="f-engine"]').val();
+                    var topo = $('select[name="f-topology"]').val();
+                    var curStyle = $('select[name="f-cluster-style"]').val();
+                    $('#td-cluster-style').html(buildClusterStyleSelect(eng, topo, curStyle));
+                    $('#td-replication-cluster').html(buildClusterSelect(
+                        $('select[name="f-replication-cluster"]').val(), eng
+                    ));
+                    var isReplication = topo === 'replication';
+                    $('.replication-cluster-label').toggle(isReplication);
+                    $('#td-replication-cluster').toggle(isReplication);
+                    if (!isReplication) {
+                        $('select[name="f-replication-cluster"]').val('');
+                    }
+                    if (!$('#f-port').val() && eng && DEFAULT_PORTS[eng]) {
+                        $('#f-port').val(DEFAULT_PORTS[eng]);
+                    }
+                }
+                $('select[name="f-engine"]').on('change', onEngineOrTopologyChange);
+                $('select[name="f-topology"]').on('change', onEngineOrTopologyChange);
+                onEngineOrTopologyChange();
+            },
+            yes: function(index) {
+                var payload = {
+                    id: $('#obj-id').val(),
+                    instance_name: $('#f-instance-name').val().trim(),
+                    engine: $('select[name="f-engine"]').val(),
+                    topology: $('select[name="f-topology"]').val(),
+                    cluster_style: $('select[name="f-cluster-style"]').val(),
+                    role: $('select[name="f-role"]').val(),
+                    status: $('select[name="f-status"]').val(),
+                    environment_id: $('select[name="f-environment"]').val(),
+                    business_id: $('select[name="f-business"]').val(),
+                    replication_cluster_id: $('select[name="f-replication-cluster"]').val() || null,
+                    connect_host: $('#f-connect-host').val().trim(),
+                    port: $('#f-port').val(),
+                    read_connect_host: $('#f-read-host').val().trim(),
+                    read_port: $('#f-read-port').val() || null,
+                    db_name: $('#f-db-name').val().trim(),
+                    charset: $('#f-charset').val().trim(),
+                    sid: $('#f-sid').val().trim(),
+                    service_name: $('#f-service-name').val().trim(),
+                    is_ssl: $('#f-is-ssl').val() === '1',
+                    version: $('#f-version').val().trim(),
+                    remark: $('#f-remark').val().trim()
+                };
+                if (!payload.instance_name) { layer.msg('请填写实例名称', {icon: 2}); return; }
+                if (!payload.engine) { layer.msg('请选择数据库类型', {icon: 2}); return; }
+                if (!payload.environment_id) { layer.msg('请选择所属环境', {icon: 2}); return; }
+                if (!payload.business_id) { layer.msg('请选择所属业务', {icon: 2}); return; }
+                if (!payload.connect_host) { layer.msg('请填写连接地址', {icon: 2}); return; }
+                if (payload.topology === 'ha_cluster' && !payload.cluster_style) {
+                    layer.msg('高可用集群必须选择集群类型（Oracle RAC 请选择 Oracle RAC）', {icon: 2});
+                    return;
+                }
+                if (payload.topology === 'replication' && !payload.replication_cluster_id) {
+                    layer.msg('复制集成员必须选择所属复制集', {icon: 2});
+                    return;
+                }
+
+                var isEdit = !!payload.id;
+                $.ajax({
+                    url: '/db-instance/api/',
+                    type: isEdit ? 'PUT' : 'POST',
+                    contentType: 'application/json',
+                    data: JSON.stringify(payload),
+                    headers: {'X-CSRFToken': getCookie('csrftoken_dbatoolbox')},
+                    success: function(r) {
+                        ajaxShowResult(r, index, reloadTable);
+                    },
+                    error: ajaxShowError
+                });
+            },
+            btn2: function(index) { layer.close(index); }
+        });
+    }
+
+    function getCookie(name) {
+        var r = document.cookie.match("\\b" + name + "=([^;]*)\\b");
+        return r ? r[1] : '';
+    }
+});
+</script>
+{% endblock %}

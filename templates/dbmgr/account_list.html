@@ -1,0 +1,217 @@
+{% extends "base.html" %}
+{% block title %}连接账号维护 - DBAToolbox{% endblock %}
+
+{% block content %}
+<div class="breadcrumb">数据库管理 / 连接账号维护</div>
+
+<div class="layui-card">
+    <div class="layui-card-header"><span>连接账号列表</span></div>
+    <div class="layui-card-body">
+        <div class="layui-form layui-form-item" style="margin-bottom:10px;">
+            <div class="layui-inline">
+                <select id="filter-instance" lay-ignore style="height:38px;border:1px solid #e6e6e6;border-radius:2px;padding:0 8px;min-width:220px;">
+                    <option value="">全部实例</option>
+                </select>
+            </div>
+            <div class="layui-inline">
+                <input type="text" id="search-keyword" placeholder="实例/账号名搜索" class="layui-input" style="width:220px;">
+            </div>
+            <button class="layui-btn" id="btn-search"><i class="layui-icon layui-icon-search"></i> 搜索</button>
+            <button class="layui-btn layui-btn-normal" id="btn-add"><i class="layui-icon layui-icon-add-1"></i> 添加</button>
+        </div>
+        <table id="main-table" lay-filter="main-table"></table>
+    </div>
+</div>
+
+<script type="text/html" id="action-bar">
+    <a class="layui-btn layui-btn-xs layui-btn-normal" lay-event="edit">修改</a>
+    <a class="layui-btn layui-btn-xs layui-btn-danger" lay-event="del">删除</a>
+</script>
+
+{% verbatim %}
+<script type="text/html" id="default-tpl">
+    {{# if(d.is_default) { }}<span style="color:#5fb878;">是</span>{{# } else { }}<span style="color:#999;">否</span>{{# } }}
+</script>
+<script type="text/html" id="pwd-tpl">
+    ******
+</script>
+{% endverbatim %}
+{% endblock %}
+
+{% block extra_script %}
+<script>
+var instances = {{ instances|safe }};
+var accountTypes = {{ account_types|safe }};
+var filterInstanceId = "{{ filter_instance_id|escapejs }}";
+
+function buildSelect(name, list, currentVal, placeholder, valueField, labelField) {
+    valueField = valueField || 'value';
+    labelField = labelField || 'label';
+    var s = '<select name="' + name + '" lay-ignore style="width:100%;height:38px;border:1px solid #e6e6e6;border-radius:2px;padding:0 8px;">'
+        + '<option value="">' + (placeholder || '请选择') + '</option>';
+    for (var i = 0; i < list.length; i++) {
+        var val = list[i][valueField];
+        var label = list[i][labelField];
+        var sel = (String(val) === String(currentVal)) ? ' selected' : '';
+        s += '<option value="' + val + '"' + sel + '>' + label + '</option>';
+    }
+    s += '</select>';
+    return s;
+}
+
+function boolSelect(id, val) {
+    return '<select id="' + id + '" lay-ignore style="width:100%;height:38px;border:1px solid #e6e6e6;border-radius:2px;padding:0 8px;">'
+        + '<option value="1"' + (val ? ' selected' : '') + '>是</option>'
+        + '<option value="0"' + (!val ? ' selected' : '') + '>否</option></select>';
+}
+
+function initInstanceFilter() {
+    var $sel = $('#filter-instance');
+    for (var i = 0; i < instances.length; i++) {
+        var inst = instances[i];
+        var selected = (String(inst.id) === String(filterInstanceId)) ? ' selected' : '';
+        $sel.append('<option value="' + inst.id + '"' + selected + '>' + inst.instance_name + '</option>');
+    }
+}
+
+layui.use(['table', 'layer'], function() {
+    var table = layui.table;
+    var layer = layui.layer;
+    initInstanceFilter();
+
+    var tableIns = table.render({
+        elem: '#main-table',
+        url: '/db-account/api/',
+        where: {instance_id: filterInstanceId},
+        page: true,
+        limit: 10,
+        limits: [10, 20, 50, 100],
+        cols: [[
+            {field: 'id', title: 'ID', width: 70},
+            {field: 'instance__display', title: '关联实例', width: 160},
+            {field: 'account_type__display', title: '账号类型', width: 100},
+            {field: 'account_name', title: '账号名称', width: 130},
+            {field: 'account_pswd', title: '密码', width: 80, templet: '#pwd-tpl'},
+            {field: 'default_schema', title: '默认Schema', width: 120},
+            {field: 'is_default', title: '默认运维', width: 90, templet: '#default-tpl'},
+            {field: 'remark', title: '备注', minWidth: 120},
+            {title: '操作', width: 120, toolbar: '#action-bar', fixed: 'right'}
+        ]],
+        defaultToolbar: [],
+        request: {pageName: 'page', limitName: 'limit'},
+        response: {statusCode: 0, countName: 'count', dataName: 'data'},
+        parseData: function(res) {
+            return {code: res.code, msg: res.msg, count: res.count, data: res.data};
+        }
+    });
+
+    function reloadTable() {
+        tableIns.reload({
+            where: {
+                keyword: $('#search-keyword').val(),
+                instance_id: $('#filter-instance').val()
+            }
+        });
+    }
+
+    $('#btn-search').click(reloadTable);
+    $('#filter-instance').change(reloadTable);
+    $('#search-keyword').keydown(function(e) { if (e.keyCode === 13) reloadTable(); });
+
+    table.on('tool(main-table)', function(obj) {
+        if (obj.event === 'del') {
+            layer.confirm('确认删除该连接账号？', {icon: 3}, function(idx) {
+                $.ajax({
+                    url: '/db-account/api/',
+                    type: 'DELETE',
+                    contentType: 'application/json',
+                    data: JSON.stringify({id: obj.data.id}),
+                    headers: {'X-CSRFToken': getCookie('csrftoken_dbatoolbox')},
+                    success: function(r) {
+                        if (r.code === 0) { layer.msg(r.msg, {icon: 1}); reloadTable(); }
+                        else { layer.msg(r.msg, {icon: 2}); }
+                    }
+                });
+                layer.close(idx);
+            });
+        } else if (obj.event === 'edit') {
+            openForm('修改连接账号', obj.data);
+        }
+    });
+
+    $('#btn-add').click(function() {
+        var preset = {};
+        var curInst = $('#filter-instance').val();
+        if (curInst) preset.instance_id = curInst;
+        openForm('添加连接账号', preset);
+    });
+
+    function openForm(title, data) {
+        data = data || {};
+        var isEdit = !!data.id;
+        var pwdPlaceholder = isEdit ? '留空表示不修改' : '';
+        var html = '<div style="padding:15px 20px 5px;">'
+            + '<form class="layui-form">'
+            + '<input type="hidden" id="obj-id" value="' + (data.id || '') + '">'
+            + '<table class="layui-table" style="margin:0;"><tbody>'
+            + '<tr>'
+                + '<td style="width:16%;text-align:right;">关联实例</td><td style="width:34%;">' + buildSelect('f-instance', instances, data.instance_id, '请选择实例', 'id', 'instance_name') + '</td>'
+                + '<td style="width:16%;text-align:right;">账号类型</td><td style="width:34%;">' + buildSelect('f-account-type', accountTypes, data.account_type || 'admin', '请选择') + '</td>'
+            + '</tr>'
+            + '<tr>'
+                + '<td style="text-align:right;">账号名称</td><td><input type="text" id="f-account-name" class="layui-input" value="' + (data.account_name || '') + '"></td>'
+                + '<td style="text-align:right;">账号密码</td><td><input type="password" id="f-account-pswd" class="layui-input" placeholder="' + pwdPlaceholder + '"></td>'
+            + '</tr>'
+            + '<tr>'
+                + '<td style="text-align:right;">默认Schema</td><td><input type="text" id="f-default-schema" class="layui-input" value="' + (data.default_schema || '') + '"></td>'
+                + '<td style="text-align:right;">默认运维账号</td><td>' + boolSelect('f-is-default', !!data.is_default) + '</td>'
+            + '</tr>'
+            + '<tr>'
+                + '<td style="text-align:right;">备注</td><td colspan="3"><input type="text" id="f-remark" class="layui-input" value="' + (data.remark || '') + '"></td>'
+            + '</tr>'
+            + '</tbody></table></form></div>';
+
+        layer.open({
+            type: 1,
+            title: title,
+            area: ['760px', '360px'],
+            content: html,
+            btn: ['保存', '取消'],
+            yes: function(index) {
+                var payload = {
+                    id: $('#obj-id').val(),
+                    instance_id: $('select[name="f-instance"]').val(),
+                    account_type: $('select[name="f-account-type"]').val(),
+                    account_name: $('#f-account-name').val().trim(),
+                    account_pswd: $('#f-account-pswd').val(),
+                    default_schema: $('#f-default-schema').val().trim(),
+                    is_default: $('#f-is-default').val() === '1',
+                    remark: $('#f-remark').val().trim()
+                };
+                if (!payload.instance_id) { layer.msg('请选择关联实例', {icon: 2}); return; }
+                if (!payload.account_name) { layer.msg('请填写账号名称', {icon: 2}); return; }
+                if (!isEdit && !payload.account_pswd) { layer.msg('请填写账号密码', {icon: 2}); return; }
+
+                $.ajax({
+                    url: '/db-account/api/',
+                    type: isEdit ? 'PUT' : 'POST',
+                    contentType: 'application/json',
+                    data: JSON.stringify(payload),
+                    headers: {'X-CSRFToken': getCookie('csrftoken_dbatoolbox')},
+                    success: function(r) {
+                        if (r.code === 0) { layer.msg(r.msg, {icon: 1}); layer.close(index); reloadTable(); }
+                        else { layer.msg(r.msg, {icon: 2}); }
+                    }
+                });
+            },
+            btn2: function(index) { layer.close(index); }
+        });
+    }
+
+    function getCookie(name) {
+        var r = document.cookie.match("\\b" + name + "=([^;]*)\\b");
+        return r ? r[1] : '';
+    }
+});
+</script>
+{% endblock %}

@@ -1,0 +1,224 @@
+{% extends "base.html" %}
+{% block title %}部署节点维护 - DBAToolbox{% endblock %}
+
+{% block content %}
+<div class="breadcrumb">数据库管理 / 部署节点维护</div>
+
+<div class="layui-card">
+    <div class="layui-card-header"><span>部署节点列表</span></div>
+    <div class="layui-card-body">
+        <div class="layui-form layui-form-item" style="margin-bottom:10px;">
+            <div class="layui-inline">
+                <select id="filter-instance" lay-ignore style="height:38px;border:1px solid #e6e6e6;border-radius:2px;padding:0 8px;min-width:220px;">
+                    <option value="">全部实例</option>
+                </select>
+            </div>
+            <div class="layui-inline">
+                <input type="text" id="search-keyword" placeholder="实例/主机/节点名搜索" class="layui-input" style="width:240px;">
+            </div>
+            <button class="layui-btn" id="btn-search"><i class="layui-icon layui-icon-search"></i> 搜索</button>
+            <button class="layui-btn layui-btn-normal" id="btn-add"><i class="layui-icon layui-icon-add-1"></i> 添加</button>
+        </div>
+        <table id="main-table" lay-filter="main-table"></table>
+    </div>
+</div>
+
+<script type="text/html" id="action-bar">
+    <a class="layui-btn layui-btn-xs layui-btn-normal" lay-event="edit">修改</a>
+    <a class="layui-btn layui-btn-xs layui-btn-danger" lay-event="del">删除</a>
+</script>
+
+{% verbatim %}
+<script type="text/html" id="primary-tpl">
+    {{# if(d.is_primary) { }}<span style="color:#5fb878;">是</span>{{# } else { }}<span style="color:#999;">否</span>{{# } }}
+</script>
+{% endverbatim %}
+{% endblock %}
+
+{% block extra_script %}
+<script>
+var instances = {{ instances|safe }};
+var hosts = {{ hosts|safe }};
+var filterInstanceId = "{{ filter_instance_id|escapejs }}";
+
+function buildSelect(name, list, currentVal, placeholder, valueField, labelField) {
+    valueField = valueField || 'id';
+    labelField = labelField || 'instance_name';
+    var s = '<select name="' + name + '" lay-ignore style="width:100%;height:38px;border:1px solid #e6e6e6;border-radius:2px;padding:0 8px;">'
+        + '<option value="">' + (placeholder || '请选择') + '</option>';
+    for (var i = 0; i < list.length; i++) {
+        var val = list[i][valueField];
+        var label = list[i][labelField] || list[i].display_name || list[i].hostname;
+        var sel = (String(val) === String(currentVal)) ? ' selected' : '';
+        s += '<option value="' + val + '"' + sel + '>' + label + '</option>';
+    }
+    s += '</select>';
+    return s;
+}
+
+function hostText(d) { return d.display_name || d.hostname; }
+
+function boolSelect(id, val) {
+    return '<select id="' + id + '" lay-ignore style="width:100%;height:38px;border:1px solid #e6e6e6;border-radius:2px;padding:0 8px;">'
+        + '<option value="1"' + (val ? ' selected' : '') + '>是</option>'
+        + '<option value="0"' + (!val ? ' selected' : '') + '>否</option></select>';
+}
+
+function initInstanceFilter() {
+    var $sel = $('#filter-instance');
+    for (var i = 0; i < instances.length; i++) {
+        var inst = instances[i];
+        var selected = (String(inst.id) === String(filterInstanceId)) ? ' selected' : '';
+        $sel.append('<option value="' + inst.id + '"' + selected + '>' + inst.instance_name + '</option>');
+    }
+}
+
+layui.use(['table', 'layer'], function() {
+    var table = layui.table;
+    var layer = layui.layer;
+    initInstanceFilter();
+
+    var tableIns = table.render({
+        elem: '#main-table',
+        url: '/db-instance-host/api/',
+        where: {instance_id: filterInstanceId},
+        page: true,
+        limit: 10,
+        limits: [10, 20, 50, 100],
+        cols: [[
+            {field: 'id', title: 'ID', width: 70},
+            {field: 'instance__display', title: '关联实例', width: 160},
+            {field: 'host__display', title: '部署主机', width: 140},
+            {field: 'node_name', title: '节点名称', width: 100},
+            {field: 'node_sid', title: '节点SID', width: 100},
+            {field: 'listener_host', title: '节点连接地址', width: 130},
+            {field: 'listener_port', title: '监听端口', width: 90},
+            {field: 'is_primary', title: '首选运维', width: 90, templet: '#primary-tpl'},
+            {field: 'sort_order', title: '排序', width: 70},
+            {field: 'remark', title: '备注', minWidth: 100},
+            {title: '操作', width: 120, toolbar: '#action-bar', fixed: 'right'}
+        ]],
+        defaultToolbar: [],
+        request: {pageName: 'page', limitName: 'limit'},
+        response: {statusCode: 0, countName: 'count', dataName: 'data'},
+        parseData: function(res) {
+            return {code: res.code, msg: res.msg, count: res.count, data: res.data};
+        }
+    });
+
+    function reloadTable() {
+        tableIns.reload({
+            where: {
+                keyword: $('#search-keyword').val(),
+                instance_id: $('#filter-instance').val()
+            }
+        });
+    }
+
+    $('#btn-search').click(reloadTable);
+    $('#filter-instance').change(reloadTable);
+    $('#search-keyword').keydown(function(e) { if (e.keyCode === 13) reloadTable(); });
+
+    table.on('tool(main-table)', function(obj) {
+        if (obj.event === 'del') {
+            layer.confirm('确认删除该部署节点？', {icon: 3}, function(idx) {
+                $.ajax({
+                    url: '/db-instance-host/api/',
+                    type: 'DELETE',
+                    contentType: 'application/json',
+                    data: JSON.stringify({id: obj.data.id}),
+                    headers: {'X-CSRFToken': getCookie('csrftoken_dbatoolbox')},
+                    success: function(r) {
+                        if (r.code === 0) { layer.msg(r.msg, {icon: 1}); reloadTable(); }
+                        else { layer.msg(r.msg, {icon: 2}); }
+                    }
+                });
+                layer.close(idx);
+            });
+        } else if (obj.event === 'edit') {
+            openForm('修改部署节点', obj.data);
+        }
+    });
+
+    $('#btn-add').click(function() {
+        var preset = {};
+        var curInst = $('#filter-instance').val();
+        if (curInst) preset.instance_id = curInst;
+        openForm('添加部署节点', preset);
+    });
+
+    function openForm(title, data) {
+        data = data || {};
+        var html = '<div style="padding:15px 20px 5px;max-height:480px;overflow-y:auto;">'
+            + '<form class="layui-form">'
+            + '<input type="hidden" id="obj-id" value="' + (data.id || '') + '">'
+            + '<table class="layui-table" style="margin:0;"><tbody>'
+            + '<tr>'
+                + '<td style="width:16%;text-align:right;">关联实例</td><td style="width:34%;">' + buildSelect('f-instance', instances, data.instance_id, '请选择实例') + '</td>'
+                + '<td style="width:16%;text-align:right;">部署主机</td><td style="width:34%;">' + buildSelect('f-host', hosts, data.host_id, '请选择主机', 'id', 'display_name') + '</td>'
+            + '</tr>'
+            + '<tr>'
+                + '<td style="text-align:right;">节点名称</td><td><input type="text" id="f-node-name" class="layui-input" value="' + (data.node_name || '') + '"></td>'
+                + '<td style="text-align:right;">节点SID</td><td><input type="text" id="f-node-sid" class="layui-input" value="' + (data.node_sid || '') + '"></td>'
+            + '</tr>'
+            + '<tr>'
+                + '<td style="text-align:right;">节点Service</td><td><input type="text" id="f-node-service" class="layui-input" value="' + (data.node_service_name || '') + '"></td>'
+                + '<td style="text-align:right;">节点连接地址</td><td><input type="text" id="f-listener-host" class="layui-input" value="' + (data.listener_host || '') + '" placeholder="留空用主机IP"></td>'
+            + '</tr>'
+            + '<tr>'
+                + '<td style="text-align:right;">监听端口</td><td><input type="number" id="f-listener-port" class="layui-input" value="' + (data.listener_port || '') + '" placeholder="如11521/3306"></td>'
+                + '<td style="text-align:right;">首选运维节点</td><td>' + boolSelect('f-is-primary', !!data.is_primary) + '</td>'
+            + '</tr>'
+            + '<tr>'
+                + '<td style="text-align:right;">排序</td><td><input type="number" id="f-sort-order" class="layui-input" value="' + (data.sort_order || 0) + '"></td>'
+                + '<td style="text-align:right;">备注</td><td><input type="text" id="f-remark" class="layui-input" value="' + (data.remark || '') + '"></td>'
+            + '</tr>'
+            + '</tbody></table></form></div>';
+
+        layer.open({
+            type: 1,
+            title: title,
+            area: ['860px', '420px'],
+            content: html,
+            btn: ['保存', '取消'],
+            yes: function(index) {
+                var payload = {
+                    id: $('#obj-id').val(),
+                    instance_id: $('select[name="f-instance"]').val(),
+                    host_id: $('select[name="f-host"]').val(),
+                    node_name: $('#f-node-name').val().trim(),
+                    node_sid: $('#f-node-sid').val().trim(),
+                    node_service_name: $('#f-node-service').val().trim(),
+                    listener_host: $('#f-listener-host').val().trim(),
+                    listener_port: $('#f-listener-port').val() || null,
+                    is_primary: $('#f-is-primary').val() === '1',
+                    sort_order: parseInt($('#f-sort-order').val()) || 0,
+                    remark: $('#f-remark').val().trim()
+                };
+                if (!payload.instance_id) { layer.msg('请选择关联实例', {icon: 2}); return; }
+                if (!payload.host_id) { layer.msg('请选择部署主机', {icon: 2}); return; }
+
+                var isEdit = !!payload.id;
+                $.ajax({
+                    url: '/db-instance-host/api/',
+                    type: isEdit ? 'PUT' : 'POST',
+                    contentType: 'application/json',
+                    data: JSON.stringify(payload),
+                    headers: {'X-CSRFToken': getCookie('csrftoken_dbatoolbox')},
+                    success: function(r) {
+                        if (r.code === 0) { layer.msg(r.msg, {icon: 1}); layer.close(index); reloadTable(); }
+                        else { layer.msg(r.msg, {icon: 2}); }
+                    }
+                });
+            },
+            btn2: function(index) { layer.close(index); }
+        });
+    }
+
+    function getCookie(name) {
+        var r = document.cookie.match("\\b" + name + "=([^;]*)\\b");
+        return r ? r[1] : '';
+    }
+});
+</script>
+{% endblock %}
