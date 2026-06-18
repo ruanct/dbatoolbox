@@ -9,12 +9,17 @@
     <div class="layui-card-body">
         <div class="layui-form layui-form-item" style="margin-bottom:10px;">
             <div class="layui-inline">
+                <select id="filter-engine" lay-ignore style="height:38px;border:1px solid #e6e6e6;border-radius:2px;padding:0 8px;min-width:140px;">
+                    <option value="">全部类型</option>
+                </select>
+            </div>
+            <div class="layui-inline">
                 <select id="filter-instance" lay-ignore style="height:38px;border:1px solid #e6e6e6;border-radius:2px;padding:0 8px;min-width:220px;">
                     <option value="">全部实例</option>
                 </select>
             </div>
             <div class="layui-inline">
-                <input type="text" id="search-keyword" placeholder="实例/账号名搜索" class="layui-input" style="width:220px;">
+                <input type="text" id="search-keyword" placeholder="实例/账号名/授权主机搜索" class="layui-input" style="width:220px;">
             </div>
             <button class="layui-btn" id="btn-search"><i class="layui-icon layui-icon-search"></i> 搜索</button>
             <button class="layui-btn layui-btn-normal" id="btn-add"><i class="layui-icon layui-icon-add-1"></i> 添加</button>
@@ -32,9 +37,6 @@
 <script type="text/html" id="default-tpl">
     {{# if(d.is_default) { }}<span style="color:#5fb878;">是</span>{{# } else { }}<span style="color:#999;">否</span>{{# } }}
 </script>
-<script type="text/html" id="pwd-tpl">
-    ******
-</script>
 {% endverbatim %}
 {% endblock %}
 
@@ -42,7 +44,25 @@
 <script>
 var instances = {{ instances|safe }};
 var accountTypes = {{ account_types|safe }};
+var engines = {{ engines|safe }};
 var filterInstanceId = "{{ filter_instance_id|escapejs }}";
+var filterEngine = "{{ filter_engine|escapejs }}";
+
+var GRANT_HOST_PRESETS = [
+    {value: '%', label: '% (任意主机)'},
+    {value: 'localhost', label: 'localhost'},
+    {value: '127.0.0.1', label: '127.0.0.1'},
+    {value: '10.%', label: '10.%'},
+    {value: '192.168.%', label: '192.168.%'}
+];
+
+function escapeHtmlAttr(str) {
+    return String(str || '')
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
 
 function buildSelect(name, list, currentVal, placeholder, valueField, labelField) {
     valueField = valueField || 'value';
@@ -65,33 +85,152 @@ function boolSelect(id, val) {
         + '<option value="0"' + (!val ? ' selected' : '') + '>否</option></select>';
 }
 
-function initInstanceFilter() {
-    var $sel = $('#filter-instance');
+function getInstanceEngine(instanceId) {
+    var inst = getInstanceById(instanceId);
+    return inst ? (inst.engine || '') : '';
+}
+
+function getInstanceById(id) {
     for (var i = 0; i < instances.length; i++) {
-        var inst = instances[i];
-        var selected = (String(inst.id) === String(filterInstanceId)) ? ' selected' : '';
+        if (String(instances[i].id) === String(id)) {
+            return instances[i];
+        }
+    }
+    return null;
+}
+
+function filterInstancesByEngine(engine) {
+    if (!engine) {
+        return instances;
+    }
+    return instances.filter(function(item) {
+        return item.engine === engine;
+    });
+}
+
+function initEngineFilter() {
+    var $sel = $('#filter-engine');
+    for (var i = 0; i < engines.length; i++) {
+        $sel.append('<option value="' + engines[i].value + '">' + engines[i].label + '</option>');
+    }
+}
+
+function rebuildInstanceFilter(selectedId) {
+    var engine = $('#filter-engine').val();
+    var list = filterInstancesByEngine(engine);
+    var $sel = $('#filter-instance');
+    $sel.empty().append('<option value="">全部实例</option>');
+    var hasSelected = false;
+    for (var i = 0; i < list.length; i++) {
+        var inst = list[i];
+        var selected = (selectedId && String(inst.id) === String(selectedId)) ? ' selected' : '';
+        if (selected) {
+            hasSelected = true;
+        }
         $sel.append('<option value="' + inst.id + '"' + selected + '>' + inst.instance_name + '</option>');
     }
+    if (selectedId && !hasSelected) {
+        $sel.val('');
+    }
+}
+
+function initFilters() {
+    initEngineFilter();
+    var initEngine = filterEngine;
+    if (!initEngine && filterInstanceId) {
+        var inst = getInstanceById(filterInstanceId);
+        if (inst) {
+            initEngine = inst.engine;
+        }
+    }
+    if (initEngine) {
+        $('#filter-engine').val(initEngine);
+    }
+    rebuildInstanceFilter(filterInstanceId);
+}
+
+function getFilterParams() {
+    return {
+        keyword: $('#search-keyword').val(),
+        engine: $('#filter-engine').val(),
+        instance_id: $('#filter-instance').val()
+    };
+}
+
+function buildGrantHostField(currentVal) {
+    currentVal = currentVal || '';
+    var presetOpts = '<option value="">常用预设</option>';
+    var matched = false;
+    for (var i = 0; i < GRANT_HOST_PRESETS.length; i++) {
+        var item = GRANT_HOST_PRESETS[i];
+        if (item.value === currentVal) {
+            matched = true;
+        }
+        presetOpts += '<option value="' + item.value + '">' + item.label + '</option>';
+    }
+    var customSelected = currentVal && !matched ? ' selected' : '';
+    presetOpts += '<option value="__custom__"' + customSelected + '>自定义</option>';
+    return '<div style="display:flex;gap:8px;">'
+        + '<select id="f-grant-host-preset" lay-ignore style="width:38%;height:38px;border:1px solid #e6e6e6;border-radius:2px;padding:0 8px;">'
+        + presetOpts
+        + '</select>'
+        + '<input type="text" id="f-grant-host" class="layui-input" style="flex:1;" value="' + currentVal + '" placeholder="如 10.1.3.%">'
+        + '</div>';
+}
+
+function syncGrantHostPreset() {
+    var val = $('#f-grant-host').val().trim();
+    var $preset = $('#f-grant-host-preset');
+    var matched = false;
+    for (var i = 0; i < GRANT_HOST_PRESETS.length; i++) {
+        if (GRANT_HOST_PRESETS[i].value === val) {
+            $preset.val(val);
+            matched = true;
+            break;
+        }
+    }
+    if (!matched) {
+        $preset.val(val ? '__custom__' : '');
+    }
+}
+
+function toggleGrantHostField() {
+    var engine = getInstanceEngine($('select[name="f-instance"]').val());
+    var isMysql = engine === 'mysql';
+    $('#tr-grant-host').toggle(isMysql);
+    if (!isMysql) {
+        $('#f-grant-host').val('');
+        $('#f-grant-host-preset').val('');
+    } else if (!$('#f-grant-host').val()) {
+        $('#f-grant-host').val('%');
+        $('#f-grant-host-preset').val('%');
+    }
+}
+
+function ajaxShowError(xhr) {
+    var r = xhr.responseJSON || {};
+    layer.msg(r.msg || '请求失败', {icon: 2});
 }
 
 layui.use(['table', 'layer'], function() {
     var table = layui.table;
     var layer = layui.layer;
-    initInstanceFilter();
+    initFilters();
 
     var tableIns = table.render({
         elem: '#main-table',
         url: '/db-account/api/',
-        where: {instance_id: filterInstanceId},
+        where: getFilterParams(),
         page: true,
         limit: 10,
         limits: [10, 20, 50, 100],
         cols: [[
             {field: 'id', title: 'ID', width: 70},
+            {field: 'type_display', title: '类型', width: 90},
             {field: 'instance__display', title: '关联实例', width: 160},
             {field: 'account_type__display', title: '账号类型', width: 100},
-            {field: 'account_name', title: '账号名称', width: 130},
-            {field: 'account_pswd', title: '密码', width: 80, templet: '#pwd-tpl'},
+            {field: 'full_account_name', title: '账号', width: 180},
+            {field: 'account_pswd', title: '密码', width: 160},
             {field: 'default_schema', title: '默认Schema', width: 120},
             {field: 'is_default', title: '默认运维', width: 90, templet: '#default-tpl'},
             {field: 'remark', title: '备注', minWidth: 120},
@@ -106,15 +245,14 @@ layui.use(['table', 'layer'], function() {
     });
 
     function reloadTable() {
-        tableIns.reload({
-            where: {
-                keyword: $('#search-keyword').val(),
-                instance_id: $('#filter-instance').val()
-            }
-        });
+        tableIns.reload({where: getFilterParams()});
     }
 
     $('#btn-search').click(reloadTable);
+    $('#filter-engine').change(function() {
+        rebuildInstanceFilter('');
+        reloadTable();
+    });
     $('#filter-instance').change(reloadTable);
     $('#search-keyword').keydown(function(e) { if (e.keyCode === 13) reloadTable(); });
 
@@ -130,7 +268,8 @@ layui.use(['table', 'layer'], function() {
                     success: function(r) {
                         if (r.code === 0) { layer.msg(r.msg, {icon: 1}); reloadTable(); }
                         else { layer.msg(r.msg, {icon: 2}); }
-                    }
+                    },
+                    error: ajaxShowError
                 });
                 layer.close(idx);
             });
@@ -150,6 +289,8 @@ layui.use(['table', 'layer'], function() {
         data = data || {};
         var isEdit = !!data.id;
         var pwdPlaceholder = isEdit ? '留空表示不修改' : '';
+        var grantHostVal = data.grant_host || '';
+        var pwdVal = escapeHtmlAttr(data.account_pswd || '');
         var html = '<div style="padding:15px 20px 5px;">'
             + '<form class="layui-form">'
             + '<input type="hidden" id="obj-id" value="' + (data.id || '') + '">'
@@ -159,8 +300,11 @@ layui.use(['table', 'layer'], function() {
                 + '<td style="width:16%;text-align:right;">账号类型</td><td style="width:34%;">' + buildSelect('f-account-type', accountTypes, data.account_type || 'admin', '请选择') + '</td>'
             + '</tr>'
             + '<tr>'
-                + '<td style="text-align:right;">账号名称</td><td><input type="text" id="f-account-name" class="layui-input" value="' + (data.account_name || '') + '"></td>'
-                + '<td style="text-align:right;">账号密码</td><td><input type="password" id="f-account-pswd" class="layui-input" placeholder="' + pwdPlaceholder + '"></td>'
+                + '<td style="text-align:right;">账号名称</td><td><input type="text" id="f-account-name" class="layui-input" value="' + escapeHtmlAttr(data.account_name || '') + '"></td>'
+                + '<td style="text-align:right;">账号密码</td><td><input type="text" id="f-account-pswd" class="layui-input" value="' + pwdVal + '" placeholder="' + pwdPlaceholder + '"></td>'
+            + '</tr>'
+            + '<tr id="tr-grant-host">'
+                + '<td style="text-align:right;">授权主机</td><td colspan="3">' + buildGrantHostField(grantHostVal) + '</td>'
             + '</tr>'
             + '<tr>'
                 + '<td style="text-align:right;">默认Schema</td><td><input type="text" id="f-default-schema" class="layui-input" value="' + (data.default_schema || '') + '"></td>'
@@ -174,15 +318,30 @@ layui.use(['table', 'layer'], function() {
         layer.open({
             type: 1,
             title: title,
-            area: ['760px', '360px'],
+            area: ['760px', '400px'],
             content: html,
             btn: ['保存', '取消'],
+            success: function() {
+                $('select[name="f-instance"]').on('change', toggleGrantHostField);
+                $('#f-grant-host-preset').on('change', function() {
+                    var val = $(this).val();
+                    if (val && val !== '__custom__') {
+                        $('#f-grant-host').val(val);
+                    }
+                });
+                $('#f-grant-host').on('input blur', syncGrantHostPreset);
+                toggleGrantHostField();
+                syncGrantHostPreset();
+            },
             yes: function(index) {
+                var instanceId = $('select[name="f-instance"]').val();
+                var engine = getInstanceEngine(instanceId);
                 var payload = {
                     id: $('#obj-id').val(),
-                    instance_id: $('select[name="f-instance"]').val(),
+                    instance_id: instanceId,
                     account_type: $('select[name="f-account-type"]').val(),
                     account_name: $('#f-account-name').val().trim(),
+                    grant_host: engine === 'mysql' ? $('#f-grant-host').val().trim() : '',
                     account_pswd: $('#f-account-pswd').val(),
                     default_schema: $('#f-default-schema').val().trim(),
                     is_default: $('#f-is-default').val() === '1',
@@ -190,6 +349,10 @@ layui.use(['table', 'layer'], function() {
                 };
                 if (!payload.instance_id) { layer.msg('请选择关联实例', {icon: 2}); return; }
                 if (!payload.account_name) { layer.msg('请填写账号名称', {icon: 2}); return; }
+                if (engine === 'mysql' && !payload.grant_host) {
+                    layer.msg('MySQL 账号必须填写授权主机', {icon: 2});
+                    return;
+                }
                 if (!isEdit && !payload.account_pswd) { layer.msg('请填写账号密码', {icon: 2}); return; }
 
                 $.ajax({
@@ -201,7 +364,8 @@ layui.use(['table', 'layer'], function() {
                     success: function(r) {
                         if (r.code === 0) { layer.msg(r.msg, {icon: 1}); layer.close(index); reloadTable(); }
                         else { layer.msg(r.msg, {icon: 2}); }
-                    }
+                    },
+                    error: ajaxShowError
                 });
             },
             btn2: function(index) { layer.close(index); }

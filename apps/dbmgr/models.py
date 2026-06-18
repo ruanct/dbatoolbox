@@ -240,6 +240,13 @@ class DatabaseAccount(models.Model):
         max_length=16, choices=ACCOUNT_TYPE_CHOICES, default="admin", verbose_name="账号类型",
     )
     account_name = models.CharField(max_length=128, verbose_name="账号名称")
+    grant_host = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        verbose_name="授权主机",
+        help_text="MySQL 专用，对应 mysql.user.Host，如 %、localhost、10.1.%",
+    )
     account_pswd = models.CharField(max_length=256, verbose_name="账号密码")
     default_schema = models.CharField(max_length=128, blank=True, default="", verbose_name="默认Schema")
     is_default = models.BooleanField(default=False, verbose_name="默认运维账号")
@@ -253,8 +260,8 @@ class DatabaseAccount(models.Model):
         verbose_name_plural = verbose_name
         constraints = [
             models.UniqueConstraint(
-                fields=["instance", "account_name"],
-                name="uniq_dbmgr_instance_account_name",
+                fields=["instance", "account_name", "grant_host"],
+                name="uniq_dbmgr_instance_account_identity",
             ),
         ]
         indexes = [
@@ -262,4 +269,6 @@ class DatabaseAccount(models.Model):
         ]
 
     def __str__(self) -> str:
-        return f"{self.account_name}@{self.instance.instance_name}"
+        if self.instance.engine == "mysql" and self.grant_host:
+            return f"{self.account_name}@{self.grant_host}"
+        return self.account_name

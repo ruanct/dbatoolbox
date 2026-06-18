@@ -9,6 +9,11 @@
     <div class="layui-card-body">
         <div class="layui-form layui-form-item" style="margin-bottom:10px;">
             <div class="layui-inline">
+                <select id="filter-engine" lay-ignore style="height:38px;border:1px solid #e6e6e6;border-radius:2px;padding:0 8px;min-width:140px;">
+                    <option value="">全部类型</option>
+                </select>
+            </div>
+            <div class="layui-inline">
                 <select id="filter-instance" lay-ignore style="height:38px;border:1px solid #e6e6e6;border-radius:2px;padding:0 8px;min-width:220px;">
                     <option value="">全部实例</option>
                 </select>
@@ -39,7 +44,9 @@
 <script>
 var instances = {{ instances|safe }};
 var hosts = {{ hosts|safe }};
+var engines = {{ engines|safe }};
 var filterInstanceId = "{{ filter_instance_id|escapejs }}";
+var filterEngine = "{{ filter_engine|escapejs }}";
 
 function buildSelect(name, list, currentVal, placeholder, valueField, labelField) {
     valueField = valueField || 'id';
@@ -56,6 +63,73 @@ function buildSelect(name, list, currentVal, placeholder, valueField, labelField
     return s;
 }
 
+function getInstanceById(id) {
+    for (var i = 0; i < instances.length; i++) {
+        if (String(instances[i].id) === String(id)) {
+            return instances[i];
+        }
+    }
+    return null;
+}
+
+function filterInstancesByEngine(engine) {
+    if (!engine) {
+        return instances;
+    }
+    return instances.filter(function(item) {
+        return item.engine === engine;
+    });
+}
+
+function initEngineFilter() {
+    var $sel = $('#filter-engine');
+    for (var i = 0; i < engines.length; i++) {
+        $sel.append('<option value="' + engines[i].value + '">' + engines[i].label + '</option>');
+    }
+}
+
+function rebuildInstanceFilter(selectedId) {
+    var engine = $('#filter-engine').val();
+    var list = filterInstancesByEngine(engine);
+    var $sel = $('#filter-instance');
+    $sel.empty().append('<option value="">全部实例</option>');
+    var hasSelected = false;
+    for (var i = 0; i < list.length; i++) {
+        var inst = list[i];
+        var selected = (selectedId && String(inst.id) === String(selectedId)) ? ' selected' : '';
+        if (selected) {
+            hasSelected = true;
+        }
+        $sel.append('<option value="' + inst.id + '"' + selected + '>' + inst.instance_name + '</option>');
+    }
+    if (selectedId && !hasSelected) {
+        $sel.val('');
+    }
+}
+
+function initFilters() {
+    initEngineFilter();
+    var initEngine = filterEngine;
+    if (!initEngine && filterInstanceId) {
+        var inst = getInstanceById(filterInstanceId);
+        if (inst) {
+            initEngine = inst.engine;
+        }
+    }
+    if (initEngine) {
+        $('#filter-engine').val(initEngine);
+    }
+    rebuildInstanceFilter(filterInstanceId);
+}
+
+function getFilterParams() {
+    return {
+        keyword: $('#search-keyword').val(),
+        engine: $('#filter-engine').val(),
+        instance_id: $('#filter-instance').val()
+    };
+}
+
 function hostText(d) { return d.display_name || d.hostname; }
 
 function boolSelect(id, val) {
@@ -64,38 +138,31 @@ function boolSelect(id, val) {
         + '<option value="0"' + (!val ? ' selected' : '') + '>否</option></select>';
 }
 
-function initInstanceFilter() {
-    var $sel = $('#filter-instance');
-    for (var i = 0; i < instances.length; i++) {
-        var inst = instances[i];
-        var selected = (String(inst.id) === String(filterInstanceId)) ? ' selected' : '';
-        $sel.append('<option value="' + inst.id + '"' + selected + '>' + inst.instance_name + '</option>');
-    }
-}
-
 layui.use(['table', 'layer'], function() {
     var table = layui.table;
     var layer = layui.layer;
-    initInstanceFilter();
+    initFilters();
 
     var tableIns = table.render({
         elem: '#main-table',
         url: '/db-instance-host/api/',
-        where: {instance_id: filterInstanceId},
+        where: getFilterParams(),
         page: true,
         limit: 10,
         limits: [10, 20, 50, 100],
         cols: [[
             {field: 'id', title: 'ID', width: 70},
+            {field: 'engine__display', title: '类型', width: 90},
             {field: 'instance__display', title: '关联实例', width: 160},
-            {field: 'host__display', title: '部署主机', width: 140},
-            {field: 'node_name', title: '节点名称', width: 100},
+            {field: 'host__display', title: '部署主机', width: 160},
+            {field: 'node_name', title: '节点名称', width: 160},
             {field: 'node_sid', title: '节点SID', width: 100},
+            {field: 'node_service_name', title: '节点Service', width: 120},
             {field: 'listener_host', title: '节点连接地址', width: 130},
             {field: 'listener_port', title: '监听端口', width: 90},
             {field: 'is_primary', title: '首选运维', width: 90, templet: '#primary-tpl'},
-            {field: 'sort_order', title: '排序', width: 70},
             {field: 'remark', title: '备注', minWidth: 100},
+            {field: 'sort_order', title: '排序', width: 70},
             {title: '操作', width: 120, toolbar: '#action-bar', fixed: 'right'}
         ]],
         defaultToolbar: [],
@@ -107,15 +174,14 @@ layui.use(['table', 'layer'], function() {
     });
 
     function reloadTable() {
-        tableIns.reload({
-            where: {
-                keyword: $('#search-keyword').val(),
-                instance_id: $('#filter-instance').val()
-            }
-        });
+        tableIns.reload({where: getFilterParams()});
     }
 
     $('#btn-search').click(reloadTable);
+    $('#filter-engine').change(function() {
+        rebuildInstanceFilter('');
+        reloadTable();
+    });
     $('#filter-instance').change(reloadTable);
     $('#search-keyword').keydown(function(e) { if (e.keyCode === 13) reloadTable(); });
 

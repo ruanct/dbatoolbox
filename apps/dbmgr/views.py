@@ -6,6 +6,7 @@ from django.http import JsonResponse
 from django.shortcuts import render
 from django.views.decorators.http import require_http_methods
 
+from .models import DatabaseInstance
 from .services import (
     ServiceError,
     create_account,
@@ -64,6 +65,32 @@ def _instance_filter(request) -> int | None:
         return None
 
 
+def _engine_filter(request) -> str | None:
+    raw = request.GET.get("engine", "").strip()
+    if not raw:
+        return None
+    valid = {value for value, _ in DatabaseInstance.ENGINE_CHOICES}
+    return raw if raw in valid else None
+
+
+def _derive_filter_engine(instance_id: str) -> str:
+    if not instance_id:
+        return ""
+    try:
+        iid = int(instance_id)
+    except ValueError:
+        return ""
+    engine = DatabaseInstance.objects.filter(id=iid).values_list("engine", flat=True).first()
+    return engine or ""
+
+
+def _list_filter_params(request) -> dict[str, Any]:
+    return {
+        "engine": _engine_filter(request),
+        "instance_id": _instance_filter(request),
+    }
+
+
 # ===== 复制集集群 =====
 
 @login_required
@@ -78,7 +105,13 @@ def replication_cluster_list_view(request):
 def replication_cluster_api_view(request):
     if request.method == "GET":
         page, limit, keyword = _page_params(request)
-        return _json_service(list_replication_clusters, page=page, limit=limit, keyword=keyword)
+        return _json_service(
+            list_replication_clusters,
+            page=page,
+            limit=limit,
+            keyword=keyword,
+            engine=_engine_filter(request),
+        )
     if request.method == "POST":
         return _json_from_body(create_replication_cluster, request)
     if request.method == "PUT":
@@ -100,7 +133,13 @@ def instance_list_view(request):
 def instance_api_view(request):
     if request.method == "GET":
         page, limit, keyword = _page_params(request)
-        return _json_service(list_instances, page=page, limit=limit, keyword=keyword)
+        return _json_service(
+            list_instances,
+            page=page,
+            limit=limit,
+            keyword=keyword,
+            engine=_engine_filter(request),
+        )
     if request.method == "POST":
         return _json_from_body(create_instance, request)
     if request.method == "PUT":
@@ -115,6 +154,7 @@ def deploy_host_list_view(request):
     options = get_deploy_host_form_options()
     context = {key: json.dumps(val) for key, val in options.items()}
     context["filter_instance_id"] = request.GET.get("instance_id", "")
+    context["filter_engine"] = _derive_filter_engine(context["filter_instance_id"])
     return render(request, "dbmgr/deploy_host_list.html", context)
 
 
@@ -123,12 +163,14 @@ def deploy_host_list_view(request):
 def deploy_host_api_view(request):
     if request.method == "GET":
         page, limit, keyword = _page_params(request)
+        filters = _list_filter_params(request)
         return _json_service(
             list_deploy_hosts,
             page=page,
             limit=limit,
             keyword=keyword,
-            instance_id=_instance_filter(request),
+            instance_id=filters["instance_id"],
+            engine=filters["engine"],
         )
     if request.method == "POST":
         return _json_from_body(create_deploy_host, request)
@@ -144,6 +186,7 @@ def account_list_view(request):
     options = get_account_form_options()
     context = {key: json.dumps(val) for key, val in options.items()}
     context["filter_instance_id"] = request.GET.get("instance_id", "")
+    context["filter_engine"] = _derive_filter_engine(context["filter_instance_id"])
     return render(request, "dbmgr/account_list.html", context)
 
 
@@ -152,12 +195,14 @@ def account_list_view(request):
 def account_api_view(request):
     if request.method == "GET":
         page, limit, keyword = _page_params(request)
+        filters = _list_filter_params(request)
         return _json_service(
             list_accounts,
             page=page,
             limit=limit,
             keyword=keyword,
-            instance_id=_instance_filter(request),
+            instance_id=filters["instance_id"],
+            engine=filters["engine"],
         )
     if request.method == "POST":
         return _json_from_body(create_account, request)

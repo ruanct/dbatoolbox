@@ -9,6 +9,11 @@
     <div class="layui-card-body">
         <div class="layui-form layui-form-item" style="margin-bottom:10px;">
             <div class="layui-inline">
+                <select id="filter-engine" lay-ignore style="height:38px;border:1px solid #e6e6e6;border-radius:2px;padding:0 8px;min-width:140px;">
+                    <option value="">全部类型</option>
+                </select>
+            </div>
+            <div class="layui-inline">
                 <input type="text" id="search-keyword" placeholder="复制集名称搜索" class="layui-input" style="width:260px;">
             </div>
             <button class="layui-btn" id="btn-search"><i class="layui-icon layui-icon-search"></i> 搜索</button>
@@ -52,9 +57,17 @@ function filterInstances(engine, clusterId) {
     });
 }
 
+function initEngineFilter() {
+    var $sel = $('#filter-engine');
+    for (var i = 0; i < engines.length; i++) {
+        $sel.append('<option value="' + engines[i].value + '">' + engines[i].label + '</option>');
+    }
+}
+
 layui.use(['table', 'layer'], function() {
     var table = layui.table;
     var layer = layui.layer;
+    initEngineFilter();
 
     var tableIns = table.render({
         elem: '#main-table',
@@ -81,10 +94,16 @@ layui.use(['table', 'layer'], function() {
     });
 
     function reloadTable() {
-        tableIns.reload({where: {keyword: $('#search-keyword').val()}});
+        tableIns.reload({
+            where: {
+                keyword: $('#search-keyword').val(),
+                engine: $('#filter-engine').val()
+            }
+        });
     }
 
     $('#btn-search').click(reloadTable);
+    $('#filter-engine').change(reloadTable);
     $('#search-keyword').keydown(function(e) { if (e.keyCode === 13) reloadTable(); });
 
     table.on('tool(main-table)', function(obj) {

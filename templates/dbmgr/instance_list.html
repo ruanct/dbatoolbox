@@ -9,6 +9,11 @@
     <div class="layui-card-body">
         <div class="layui-form layui-form-item" style="margin-bottom:10px;">
             <div class="layui-inline">
+                <select id="filter-engine" lay-ignore style="height:38px;border:1px solid #e6e6e6;border-radius:2px;padding:0 8px;min-width:140px;">
+                    <option value="">全部类型</option>
+                </select>
+            </div>
+            <div class="layui-inline">
                 <input type="text" id="search-keyword" placeholder="实例名/连接地址/库名搜索" class="layui-input" style="width:280px;">
             </div>
             <button class="layui-btn" id="btn-search"><i class="layui-icon layui-icon-search"></i> 搜索</button>
@@ -73,6 +78,13 @@ function buildClusterStyleSelect(engine, topology, currentVal) {
     return buildSelect('f-cluster-style', list, currentVal, placeholder);
 }
 
+function initEngineFilter() {
+    var $sel = $('#filter-engine');
+    for (var i = 0; i < engines.length; i++) {
+        $sel.append('<option value="' + engines[i].value + '">' + engines[i].label + '</option>');
+    }
+}
+
 function ajaxShowResult(r, index, reloadFn) {
     if (r.code === 0) {
         layer.msg(r.msg, {icon: 1});
@@ -118,6 +130,7 @@ function boolSelect(id, val) {
 layui.use(['table', 'layer'], function() {
     var table = layui.table;
     var layer = layui.layer;
+    initEngineFilter();
 
     var tableIns = table.render({
         elem: '#main-table',
@@ -151,10 +164,16 @@ layui.use(['table', 'layer'], function() {
     });
 
     function reloadTable() {
-        tableIns.reload({where: {keyword: $('#search-keyword').val()}});
+        tableIns.reload({
+            where: {
+                keyword: $('#search-keyword').val(),
+                engine: $('#filter-engine').val()
+            }
+        });
     }
 
     $('#btn-search').click(reloadTable);
+    $('#filter-engine').change(reloadTable);
     $('#search-keyword').keydown(function(e) { if (e.keyCode === 13) reloadTable(); });
 
     table.on('tool(main-table)', function(obj) {
@@ -194,13 +213,13 @@ layui.use(['table', 'layer'], function() {
             + '<table class="layui-table" style="margin:0;"><tbody>'
             + '<tr>'
                 + '<td style="width:14%;text-align:right;">实例名称</td><td style="width:19%;"><input type="text" id="f-instance-name" class="layui-input" value="' + (data.instance_name || '') + '"></td>'
-                + '<td style="width:14%;text-align:right;">数据库类型</td><td style="width:19%;">' + buildSelect('f-engine', engines, data.engine, '请选择') + '</td>'
-                + '<td style="width:14%;text-align:right;">部署拓扑</td><td style="width:19%;">' + buildSelect('f-topology', topologies, data.topology || 'standalone', '请选择') + '</td>'
+                + '<td style="width:14%;text-align:right;">实例角色</td><td>' + buildSelect('f-role', roles, data.role || 'master', '请选择') + '</td>'
+                + '<td style="width:14%;text-align:right;">运行状态</td><td>' + buildSelect('f-status', statuses, data.status || 'online', '请选择') + '</td>'
             + '</tr>'
             + '<tr>'
+                + '<td style="text-align:right;">数据库类型</td><td style="width:19%;">' + buildSelect('f-engine', engines, data.engine, '请选择') + '</td>'
+                + '<td style="text-align:right;">部署拓扑</td><td style="width:19%;">' + buildSelect('f-topology', topologies, data.topology || 'standalone', '请选择') + '</td>'
                 + '<td style="text-align:right;">集群类型</td><td id="td-cluster-style">' + buildClusterStyleSelect(data.engine, data.topology || 'standalone', data.cluster_style) + '</td>'
-                + '<td style="text-align:right;">实例角色</td><td>' + buildSelect('f-role', roles, data.role || 'master', '请选择') + '</td>'
-                + '<td style="text-align:right;">运行状态</td><td>' + buildSelect('f-status', statuses, data.status || 'online', '请选择') + '</td>'
             + '</tr>'
             + '<tr>'
                 + '<td style="text-align:right;">所属环境</td><td>' + buildSelect('f-environment', environments, data.environment_id, '请选择', 'id', 'name') + '</td>'
@@ -220,10 +239,10 @@ layui.use(['table', 'layer'], function() {
             + '<tr>'
                 + '<td style="text-align:right;">默认库名</td><td><input type="text" id="f-db-name" class="layui-input" value="' + (data.db_name || '') + '"></td>'
                 + '<td style="text-align:right;">字符集</td><td><input type="text" id="f-charset" class="layui-input" value="' + (data.charset || '') + '"></td>'
-                + '<td style="text-align:right;">Oracle SID</td><td><input type="text" id="f-sid" class="layui-input" value="' + (data.sid || '') + '"></td>'
             + '</tr>'
             + '<tr>'
-                + '<td style="text-align:right;">Service Name</td><td colspan="5"><input type="text" id="f-service-name" class="layui-input" value="' + (data.service_name || '') + '"></td>'
+                + '<td style="text-align:right;">Oracle SID</td><td><input type="text" id="f-sid" class="layui-input" value="' + (data.sid || '') + '"></td>'
+                + '<td style="text-align:right;">Service Name</td><td><input type="text" id="f-service-name" class="layui-input" value="' + (data.service_name || '') + '"></td>'
             + '</tr>'
             + '<tr>'
                 + '<td style="text-align:right;">备注</td><td colspan="5"><input type="text" id="f-remark" class="layui-input" value="' + (data.remark || '') + '"></td>'

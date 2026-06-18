@@ -1,6 +1,7 @@
 """apps.dbmgr 核心业务逻辑层。"""
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from django.core.paginator import Paginator
@@ -121,8 +122,12 @@ def serialize_replication_cluster(obj: DatabaseReplicationCluster) -> dict[str, 
     }
 
 
-def list_replication_clusters(*, page: int, limit: int, keyword: str) -> dict[str, Any]:
+def list_replication_clusters(
+    *, page: int, limit: int, keyword: str, engine: str | None = None,
+) -> dict[str, Any]:
     queryset = DatabaseReplicationCluster.objects.select_related("primary_instance").order_by("-id")
+    if engine:
+        queryset = queryset.filter(engine=engine)
     if keyword:
         queryset = queryset.filter(
             Q(name__icontains=keyword) | Q(remark__icontains=keyword),
@@ -246,14 +251,24 @@ def serialize_instance(obj: DatabaseInstance) -> dict[str, Any]:
         "service_name": obj.service_name,
         "is_ssl": obj.is_ssl,
         "remark": obj.remark,
-        "default_account_name": default_account.account_name if default_account else "",
+        "default_account_name": (
+            _full_account_name(
+                default_account.account_name,
+                default_account.grant_host,
+                obj.engine,
+            )
+            if default_account
+            else ""
+        ),
         "deploy_host_count": obj.deploy_hosts.count(),
         "created_at": obj.created_at.strftime("%Y-%m-%d %H:%M:%S"),
         "updated_at": obj.updated_at.strftime("%Y-%m-%d %H:%M:%S"),
     }
 
 
-def list_instances(*, page: int, limit: int, keyword: str) -> dict[str, Any]:
+def list_instances(
+    *, page: int, limit: int, keyword: str, engine: str | None = None,
+) -> dict[str, Any]:
     queryset = (
         DatabaseInstance.objects.select_related(
             "environment", "business", "replication_cluster",
@@ -261,6 +276,8 @@ def list_instances(*, page: int, limit: int, keyword: str) -> dict[str, Any]:
         .prefetch_related("accounts", "deploy_hosts")
         .order_by("-id")
     )
+    if engine:
+        queryset = queryset.filter(engine=engine)
     if keyword:
         queryset = queryset.filter(
             Q(instance_name__icontains=keyword)
@@ -387,11 +404,33 @@ def delete_instance(obj_id: Any) -> dict[str, Any]:
 # ==================== 部署节点 ====================
 
 ACCOUNT_TYPE_LABELS = dict(DatabaseAccount.ACCOUNT_TYPE_CHOICES)
+GRANT_HOST_PATTERN = re.compile(r"^[A-Za-z0-9_.%-]+$")
+
+
+def _full_account_name(account_name: str, grant_host: str, engine: str) -> str:
+    if engine == "mysql" and grant_host:
+        return f"{account_name}@{grant_host}"
+    return account_name
+
+
+def _normalize_grant_host(instance: DatabaseInstance, grant_host: str) -> str:
+    grant_host = (grant_host or "").strip()
+    if instance.engine != "mysql":
+        return ""
+    if not grant_host:
+        raise ServiceError("MySQL 账号必须填写授权主机")
+    if len(grant_host) > 255:
+        raise ServiceError("授权主机长度不能超过 255")
+    if "," in grant_host:
+        raise ServiceError("授权主机仅支持单个 Host 模式，多个网段请分别建账号")
+    if not GRANT_HOST_PATTERN.match(grant_host):
+        raise ServiceError("授权主机格式不正确")
+    return grant_host
 
 
 def get_simple_instance_options() -> list[dict[str, Any]]:
     return list(
-        DatabaseInstance.objects.order_by("instance_name").values("id", "instance_name"),
+        DatabaseInstance.objects.order_by("instance_name").values("id", "instance_name", "engine"),
     )
 
 
@@ -400,6 +439,7 @@ def get_deploy_host_form_options() -> dict[str, Any]:
 
     return {
         "instances": get_simple_instance_options(),
+        "engines": [{"value": v, "label": l} for v, l in DatabaseInstance.ENGINE_CHOICES],
         "hosts": list(Host.objects.order_by("display_name").values("id", "display_name", "hostname")),
     }
 
@@ -407,6 +447,7 @@ def get_deploy_host_form_options() -> dict[str, Any]:
 def get_account_form_options() -> dict[str, Any]:
     return {
         "instances": get_simple_instance_options(),
+        "engines": [{"value": v, "label": l} for v, l in DatabaseInstance.ENGINE_CHOICES],
         "account_types": [
             {"value": v, "label": l} for v, l in DatabaseAccount.ACCOUNT_TYPE_CHOICES
         ],
@@ -430,6 +471,7 @@ def serialize_deploy_host(obj: DatabaseInstanceHost) -> dict[str, Any]:
         "id": obj.id,
         "instance_id": obj.instance_id,
         "instance__display": obj.instance.instance_name,
+        "engine__display": _choice_label(ENGINE_LABELS, obj.instance.engine),
         "host_id": obj.host_id,
         "host__display": str(obj.host),
         "node_name": obj.node_name,
@@ -446,7 +488,12 @@ def serialize_deploy_host(obj: DatabaseInstanceHost) -> dict[str, Any]:
 
 
 def list_deploy_hosts(
-    *, page: int, limit: int, keyword: str, instance_id: int | None = None,
+    *,
+    page: int,
+    limit: int,
+    keyword: str,
+    instance_id: int | None = None,
+    engine: str | None = None,
 ) -> dict[str, Any]:
     queryset = (
         DatabaseInstanceHost.objects.select_related("instance", "host")
@@ -454,6 +501,8 @@ def list_deploy_hosts(
     )
     if instance_id:
         queryset = queryset.filter(instance_id=instance_id)
+    if engine:
+        queryset = queryset.filter(instance__engine=engine)
     if keyword:
         queryset = queryset.filter(
             Q(instance__instance_name__icontains=keyword)
@@ -551,13 +600,19 @@ def delete_deploy_host(obj_id: Any) -> dict[str, Any]:
 # ==================== 连接账号 ====================
 
 def serialize_account(obj: DatabaseAccount) -> dict[str, Any]:
+    engine = obj.instance.engine
+    grant_host = obj.grant_host if engine == "mysql" else ""
     return {
         "id": obj.id,
         "instance_id": obj.instance_id,
         "instance__display": obj.instance.instance_name,
+        "engine": engine,
+        "type_display": _choice_label(ENGINE_LABELS, engine),
         "account_type": obj.account_type,
         "account_type__display": _choice_label(ACCOUNT_TYPE_LABELS, obj.account_type),
         "account_name": obj.account_name,
+        "grant_host": grant_host,
+        "full_account_name": _full_account_name(obj.account_name, grant_host, engine),
         "account_pswd": obj.account_pswd,
         "default_schema": obj.default_schema,
         "is_default": obj.is_default,
@@ -568,15 +623,23 @@ def serialize_account(obj: DatabaseAccount) -> dict[str, Any]:
 
 
 def list_accounts(
-    *, page: int, limit: int, keyword: str, instance_id: int | None = None,
+    *,
+    page: int,
+    limit: int,
+    keyword: str,
+    instance_id: int | None = None,
+    engine: str | None = None,
 ) -> dict[str, Any]:
     queryset = DatabaseAccount.objects.select_related("instance").order_by("instance_id", "-is_default", "id")
     if instance_id:
         queryset = queryset.filter(instance_id=instance_id)
+    if engine:
+        queryset = queryset.filter(instance__engine=engine)
     if keyword:
         queryset = queryset.filter(
             Q(instance__instance_name__icontains=keyword)
             | Q(account_name__icontains=keyword)
+            | Q(grant_host__icontains=keyword)
             | Q(default_schema__icontains=keyword)
             | Q(remark__icontains=keyword),
         )
@@ -596,16 +659,26 @@ def create_account(body: dict[str, Any]) -> dict[str, Any]:
         raise ServiceError("请填写账号名称")
     if not account_pswd:
         raise ServiceError("请填写账号密码")
-    if not DatabaseInstance.objects.filter(id=instance_id).exists():
-        raise ServiceError("关联实例不存在")
-    if DatabaseAccount.objects.filter(instance_id=instance_id, account_name=account_name).exists():
-        raise ServiceError("该实例下账号名称已存在")
+    try:
+        instance = DatabaseInstance.objects.get(id=instance_id)
+    except DatabaseInstance.DoesNotExist as exc:
+        raise ServiceError("关联实例不存在") from exc
+
+    grant_host = _normalize_grant_host(instance, body.get("grant_host", ""))
+    identity_label = _full_account_name(account_name, grant_host, instance.engine)
+    if DatabaseAccount.objects.filter(
+        instance_id=instance_id,
+        account_name=account_name,
+        grant_host=grant_host,
+    ).exists():
+        raise ServiceError(f"该实例下账号 {identity_label} 已存在")
 
     is_default = bool(body.get("is_default"))
     obj = DatabaseAccount.objects.create(
         instance_id=instance_id,
         account_type=body.get("account_type", "admin"),
         account_name=account_name,
+        grant_host=grant_host,
         account_pswd=account_pswd,
         default_schema=(body.get("default_schema") or "").strip(),
         is_default=is_default,
@@ -634,10 +707,19 @@ def update_account(body: dict[str, Any]) -> dict[str, Any]:
         raise ServiceError("请选择关联实例")
     if not account_name:
         raise ServiceError("请填写账号名称")
-    if DatabaseAccount.objects.filter(instance_id=instance_id, account_name=account_name).exclude(
-        id=obj_id,
-    ).exists():
-        raise ServiceError("该实例下账号名称已存在")
+    try:
+        instance = DatabaseInstance.objects.get(id=instance_id)
+    except DatabaseInstance.DoesNotExist as exc:
+        raise ServiceError("关联实例不存在") from exc
+
+    grant_host = _normalize_grant_host(instance, body.get("grant_host", obj.grant_host))
+    identity_label = _full_account_name(account_name, grant_host, instance.engine)
+    if DatabaseAccount.objects.filter(
+        instance_id=instance_id,
+        account_name=account_name,
+        grant_host=grant_host,
+    ).exclude(id=obj_id).exists():
+        raise ServiceError(f"该实例下账号 {identity_label} 已存在")
 
     account_pswd = body.get("account_pswd")
     is_default = bool(body.get("is_default", obj.is_default))
@@ -645,6 +727,7 @@ def update_account(body: dict[str, Any]) -> dict[str, Any]:
     obj.instance_id = instance_id
     obj.account_type = body.get("account_type", obj.account_type)
     obj.account_name = account_name
+    obj.grant_host = grant_host
     if account_pswd:
         obj.account_pswd = account_pswd
     obj.default_schema = (body.get("default_schema") or "").strip()
