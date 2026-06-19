@@ -11,4 +11,7 @@ urlpatterns = [
     path("db-instance-host/api/", views.deploy_host_api_view, name="db_instance_host_api"),
     path("db-account/", views.account_list_view, name="db_account_list"),
     path("db-account/api/", views.account_api_view, name="db_account_api"),
+    path("db-dashboard/", views.db_dashboard_view, name="db_dashboard"),
+    path("db-dashboard/table/", views.db_dashboard_table_view, name="db_dashboard_table"),
+    path("db-dashboard/api/", views.db_dashboard_api_view, name="db_dashboard_api"),
 ]

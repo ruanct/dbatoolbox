@@ -167,6 +167,12 @@ CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = "Asia/Shanghai"
 CELERY_TASK_TRACK_STARTED = True
+CELERY_BEAT_SCHEDULE = {
+    "probe-database-instances": {
+        "task": "apps.dbmgr.tasks.probe_all_database_instances",
+        "schedule": 60.0,
+    },
+}
 
 # Media 文件（用户上传分发文件）
 MEDIA_ROOT = BASE_DIR.parent / "media"

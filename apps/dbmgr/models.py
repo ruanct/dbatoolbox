@@ -82,6 +82,12 @@ class DatabaseInstance(models.Model):
         ("offline", "离线"),
         ("maintenance", "维护中"),
     ]
+    PROBE_STATUS_CHOICES = [
+        ("alive", "正常"),
+        ("dead", "异常"),
+        ("unknown", "未探测"),
+        ("maintenance", "维护中"),
+    ]
 
     instance_name = models.CharField(max_length=128, unique=True, verbose_name="实例名称")
     engine = models.CharField(max_length=16, choices=ENGINE_CHOICES, verbose_name="数据库类型")
@@ -98,6 +104,21 @@ class DatabaseInstance(models.Model):
     )
     status = models.CharField(
         max_length=16, choices=STATUS_CHOICES, default="online", verbose_name="运行状态",
+    )
+    probe_status = models.CharField(
+        max_length=16,
+        choices=PROBE_STATUS_CHOICES,
+        default="unknown",
+        verbose_name="探测状态",
+    )
+    probe_message = models.CharField(
+        max_length=255, blank=True, default="", verbose_name="探测信息",
+    )
+    latency_ms = models.PositiveIntegerField(
+        null=True, blank=True, verbose_name="探测延迟(ms)",
+    )
+    last_probed_at = models.DateTimeField(
+        null=True, blank=True, verbose_name="最后探测时间",
     )
     version = models.CharField(max_length=32, blank=True, default="", verbose_name="版本号")
 
@@ -196,6 +217,21 @@ class DatabaseInstanceHost(models.Model):
     )
     is_primary = models.BooleanField(default=False, verbose_name="首选运维节点")
     sort_order = models.PositiveSmallIntegerField(default=0, verbose_name="排序")
+    probe_status = models.CharField(
+        max_length=16,
+        choices=DatabaseInstance.PROBE_STATUS_CHOICES,
+        default="unknown",
+        verbose_name="探测状态",
+    )
+    probe_message = models.CharField(
+        max_length=255, blank=True, default="", verbose_name="探测信息",
+    )
+    latency_ms = models.PositiveIntegerField(
+        null=True, blank=True, verbose_name="探测延迟(ms)",
+    )
+    last_probed_at = models.DateTimeField(
+        null=True, blank=True, verbose_name="最后探测时间",
+    )
     remark = models.TextField(blank=True, default="", verbose_name="备注")
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
     updated_at = models.DateTimeField(auto_now=True, verbose_name="更新时间")

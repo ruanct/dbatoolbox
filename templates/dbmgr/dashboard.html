@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>数据库监控大屏 - DBAToolbox</title>
+    <link rel="stylesheet" href="/static/layui.css">
+    <script src="/static/jquery.min.js"></script>
+    <style>
+        * { box-sizing: border-box; }
+        html, body {
+            height: 100%;
+            margin: 0;
+            background: #0b1220;
+            color: #d7e3f4;
+            font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+            font-size: 12px;
+        }
+        .screen-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 18px;
+            background: linear-gradient(90deg, #101b33 0%, #162544 100%);
+            border-bottom: 1px solid #1f3558;
+        }
+        .screen-title {
+            font-size: 20px;
+            font-weight: 600;
+        }
+        .screen-subtitle {
+            font-size: 12px;
+            color: #8ea6c8;
+            margin-top: 2px;
+        }
+        .summary-bar {
+            display: flex;
+            gap: 14px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .summary-item {
+            min-width: 56px;
+            text-align: center;
+        }
+        .summary-item .num {
+            font-size: 18px;
+            font-weight: 700;
+        }
+        .summary-item .label {
+            font-size: 11px;
+            color: #8ea6c8;
+        }
+        .num-alive { color: #5fb878; }
+        .num-dead { color: #ff5722; }
+        .num-maint { color: #9aa5b5; }
+        .num-unknown { color: #ffb800; }
+        .screen-body {
+            padding: 12px 16px 20px;
+            overflow: auto;
+            height: calc(100% - 72px);
+        }
+        .engine-grid {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .engine-panel {
+            background: #111c31;
+            border: 1px solid #203456;
+            border-radius: 6px;
+            overflow: hidden;
+        }
+        .engine-panel-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 12px;
+            background: #152742;
+            border-bottom: 1px solid #203456;
+        }
+        .engine-panel-title {
+            font-size: 15px;
+            font-weight: 600;
+        }
+        .engine-panel-stats {
+            font-size: 11px;
+            color: #8ea6c8;
+        }
+        .topology-stack {
+            display: flex;
+            flex-direction: column;
+        }
+        .topology-band {
+            border-bottom: 1px solid #1c2f4d;
+        }
+        .topology-band:last-child {
+            border-bottom: none;
+        }
+        .band-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 6px 12px;
+            background: rgba(255,255,255,0.02);
+            font-size: 12px;
+            font-weight: 600;
+            color: #b8cce6;
+        }
+        .band-summary {
+            font-size: 11px;
+            font-weight: normal;
+            color: #7f97b8;
+        }
+        .band-body {
+            padding: 6px 10px 8px;
+        }
+        .cluster-group {
+            margin-bottom: 6px;
+        }
+        .cluster-group:last-child {
+            margin-bottom: 0;
+        }
+        .cluster-label {
+            font-size: 11px;
+            color: #8ea6c8;
+            margin-bottom: 4px;
+            padding-left: 2px;
+        }
+        .chip-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 4px 6px;
+        }
+        .inst-chip {
+            background: #132038;
+            border: 1px solid #274066;
+            border-radius: 3px;
+            padding: 4px 6px;
+            line-height: 1.4;
+        }
+        .inst-chip.status-alive { border-left: 3px solid #5fb878; }
+        .inst-chip.status-dead { border-left: 3px solid #ff5722; }
+        .inst-chip.status-maintenance { border-left: 3px solid #9aa5b5; }
+        .inst-chip.status-unknown { border-left: 3px solid #ffb800; }
+        .chip-main {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 4px 6px;
+            min-height: 20px;
+        }
+        .chip-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+        .status-alive .chip-dot { background: #5fb878; }
+        .status-dead .chip-dot { background: #ff5722; }
+        .status-maintenance .chip-dot { background: #9aa5b5; }
+        .status-unknown .chip-dot { background: #ffb800; }
+        .chip-name {
+            font-weight: 600;
+            color: #e8f0fa;
+            max-width: 120px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .chip-addr {
+            color: #8ea6c8;
+            font-size: 11px;
+        }
+        .chip-meta {
+            color: #6d8ab0;
+            font-size: 11px;
+        }
+        .chip-latency {
+            color: #6d8ab0;
+            font-size: 11px;
+            margin-left: auto;
+        }
+        .chip-node-summary {
+            color: #7f97b8;
+            font-size: 11px;
+        }
+        .chip-toggle {
+            background: none;
+            border: none;
+            color: #7f97b8;
+            cursor: pointer;
+            padding: 0 2px;
+            font-size: 11px;
+            line-height: 1;
+        }
+        .chip-toggle:hover {
+            color: #b8cce6;
+        }
+        .chip-error {
+            margin-top: 3px;
+            font-size: 11px;
+            color: #ff9f7f;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .node-panel {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+            gap: 3px 5px;
+            margin-top: 4px;
+            padding-top: 4px;
+            border-top: 1px dashed #274066;
+        }
+        .node-panel.collapsed {
+            display: none;
+        }
+        .node-chip {
+            background: #0f1a2d;
+            border: 1px solid #223a5d;
+            border-radius: 2px;
+            padding: 2px 5px;
+            font-size: 11px;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            overflow: hidden;
+        }
+        .node-chip.status-alive { border-left: 2px solid #5fb878; }
+        .node-chip.status-dead { border-left: 2px solid #ff5722; }
+        .node-chip.status-maintenance { border-left: 2px solid #9aa5b5; }
+        .node-chip.status-unknown { border-left: 2px solid #ffb800; }
+        .node-chip-name {
+            font-weight: 600;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            max-width: 60px;
+        }
+        .node-chip-addr {
+            color: #8ea6c8;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            flex: 1;
+        }
+        .node-chip-ms {
+            color: #6d8ab0;
+            flex-shrink: 0;
+        }
+        .empty-tip {
+            color: #607892;
+            font-size: 11px;
+            padding: 4px 2px;
+        }
+        .loading-mask {
+            position: fixed;
+            inset: 0;
+            background: rgba(11,18,32,0.65);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 9999;
+            color: #d7e3f4;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+<div class="loading-mask" id="loading-mask">探测中，请稍候...</div>
+
+<div class="screen-header">
+    <div>
+        <div class="screen-title">数据库监控大屏</div>
+        <div class="screen-subtitle">
+            按数据库类型 / 部署拓扑展示实例存活状态
+            <span id="updated-at"></span>
+        </div>
+    </div>
+    <div class="summary-bar" id="summary-bar">
+        <div class="summary-item"><div class="num" id="sum-total">0</div><div class="label">总数</div></div>
+        <div class="summary-item"><div class="num num-alive" id="sum-alive">0</div><div class="label">正常</div></div>
+        <div class="summary-item"><div class="num num-dead" id="sum-dead">0</div><div class="label">异常</div></div>
+        <div class="summary-item"><div class="num num-maint" id="sum-maint">0</div><div class="label">维护</div></div>
+        <div class="summary-item"><div class="num num-unknown" id="sum-unknown">0</div><div class="label">未探测</div></div>
+        <button class="layui-btn layui-btn-xs layui-btn-normal" id="btn-refresh">立即探测</button>
+        <a href="/db-dashboard/table/" class="layui-btn layui-btn-xs layui-btn-warm">表格视图</a>
+        <a href="/db-instance/" class="layui-btn layui-btn-xs layui-btn-primary">返回后台</a>
+    </div>
+</div>
+
+<div class="screen-body">
+    <div class="engine-grid" id="engine-grid"></div>
+</div>
+
+<script>
+function getCookie(name) {
+    var r = document.cookie.match("\\b" + name + "=([^;]*)\\b");
+    return r ? r[1] : '';
+}
+
+function escapeHtml(str) {
+    return String(str || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+function showLoading(show) {
+    $('#loading-mask').css('display', show ? 'flex' : 'none');
+}
+
+function renderSummary(summary) {
+    summary = summary || {};
+    $('#sum-total').text(summary.total || 0);
+    $('#sum-alive').text(summary.alive || 0);
+    $('#sum-dead').text(summary.dead || 0);
+    $('#sum-maint').text(summary.maintenance || 0);
+    $('#sum-unknown').text(summary.unknown || 0);
+}
+
+function countNodeStatus(nodes) {
+    var total = nodes.length;
+    var alive = 0;
+    var dead = 0;
+    for (var i = 0; i < nodes.length; i++) {
+        var st = nodes[i].probe_status || 'unknown';
+        if (st === 'alive') {
+            alive += 1;
+        } else if (st === 'dead') {
+            dead += 1;
+        }
+    }
+    return {total: total, alive: alive, dead: dead};
+}
+
+function renderNodeChip(node) {
+    var status = node.probe_status || 'unknown';
+    var latency = node.latency_ms ? (node.latency_ms + 'ms') : '-';
+    var name = escapeHtml(node.node_name);
+    var addr = escapeHtml(node.connect_host + ':' + node.port);
+    var title = name;
+    if (node.node_sid) {
+        title += ' SID:' + node.node_sid;
+    }
+    if (node.probe_message) {
+        title += ' ' + node.probe_message;
+    }
+    return '<div class="node-chip status-' + status + '" title="' + escapeHtml(title) + '">'
+        + '<span class="node-chip-name">' + name + '</span>'
+        + '<span class="node-chip-addr">' + addr + '</span>'
+        + '<span class="node-chip-ms">' + latency + '</span>'
+        + '</div>';
+}
+
+function renderInstanceChip(inst) {
+    var status = inst.probe_status || 'unknown';
+    var latency = inst.latency_ms ? (inst.latency_ms + 'ms') : '-';
+    var name = escapeHtml(inst.instance_name);
+    var addr = escapeHtml(inst.connect_host + ':' + inst.port);
+    var metaParts = [];
+    if (inst.topology === 'ha_cluster' && inst.cluster_style_label) {
+        metaParts.push(inst.cluster_style_label);
+    } else if (inst.role_label) {
+        metaParts.push(inst.role_label);
+    }
+    var meta = metaParts.length ? ('<span class="chip-meta">' + escapeHtml(metaParts.join(' · ')) + '</span>') : '';
+
+    var html = '<div class="inst-chip status-' + status + '">'
+        + '<div class="chip-main">'
+        + '<span class="chip-dot"></span>'
+        + '<span class="chip-name" title="' + name + '">' + name + '</span>'
+        + '<span class="chip-addr">' + addr + '</span>'
+        + meta
+        + '<span class="chip-latency">' + latency + '</span>';
+
+    if (inst.deploy_hosts && inst.deploy_hosts.length) {
+        var ns = countNodeStatus(inst.deploy_hosts);
+        var nodeText = '节点 ' + ns.alive + '/' + ns.total + ' 正常';
+        if (ns.dead > 0) {
+            nodeText = '节点 ' + ns.dead + '/' + ns.total + ' 异常';
+        }
+        html += '<span class="chip-node-summary">' + nodeText + '</span>'
+            + '<button type="button" class="chip-toggle" title="展开/折叠节点">▾</button>';
+    }
+    html += '</div>';
+
+    if (status === 'dead' && inst.probe_message) {
+        html += '<div class="chip-error" title="' + escapeHtml(inst.probe_message) + '">'
+            + escapeHtml(inst.probe_message) + '</div>';
+    }
+
+    if (inst.deploy_hosts && inst.deploy_hosts.length) {
+        html += '<div class="node-panel collapsed">';
+        for (var i = 0; i < inst.deploy_hosts.length; i++) {
+            html += renderNodeChip(inst.deploy_hosts[i]);
+        }
+        html += '</div>';
+    }
+    html += '</div>';
+    return html;
+}
+
+function renderChipGrid(instances) {
+    if (!instances || !instances.length) {
+        return '';
+    }
+    var html = '<div class="chip-grid">';
+    for (var i = 0; i < instances.length; i++) {
+        html += renderInstanceChip(instances[i]);
+    }
+    html += '</div>';
+    return html;
+}
+
+function renderTopologyBand(section) {
+    var summary = section.summary || {};
+    var html = '<div class="topology-band">'
+        + '<div class="band-header">'
+        + '<span>' + escapeHtml(section.topology_label) + '</span>'
+        + '<span class="band-summary">共' + (summary.total || 0)
+        + ' · 正常' + (summary.alive || 0)
+        + ' · 异常' + (summary.dead || 0) + '</span>'
+        + '</div><div class="band-body">';
+
+    var hasContent = false;
+    if (section.clusters && section.clusters.length) {
+        for (var i = 0; i < section.clusters.length; i++) {
+            var cluster = section.clusters[i];
+            html += '<div class="cluster-group">'
+                + '<div class="cluster-label">' + escapeHtml(cluster.cluster_name) + '</div>'
+                + renderChipGrid(cluster.instances)
+                + '</div>';
+            hasContent = true;
+        }
+    }
+    if (section.instances && section.instances.length) {
+        if (section.topology === 'replication' && section.clusters && section.clusters.length) {
+            html += '<div class="cluster-group">'
+                + '<div class="cluster-label">未归属复制集</div>'
+                + renderChipGrid(section.instances)
+                + '</div>';
+        } else {
+            html += renderChipGrid(section.instances);
+        }
+        hasContent = true;
+    }
+    if (!hasContent) {
+        html += '<div class="empty-tip">暂无实例</div>';
+    }
+    html += '</div></div>';
+    return html;
+}
+
+function renderEnginePanel(engineData) {
+    var summary = engineData.summary || {};
+    var html = '<div class="engine-panel">'
+        + '<div class="engine-panel-header">'
+        + '<div class="engine-panel-title">' + escapeHtml(engineData.engine_label) + '</div>'
+        + '<div class="engine-panel-stats">'
+        + (summary.total || 0) + ' 监测项 · 正常 ' + (summary.alive || 0)
+        + ' · 异常 ' + (summary.dead || 0)
+        + '</div></div><div class="topology-stack">';
+
+    var topologies = engineData.topologies || [];
+    for (var i = 0; i < topologies.length; i++) {
+        html += renderTopologyBand(topologies[i]);
+    }
+    html += '</div></div>';
+    return html;
+}
+
+function bindChipToggle() {
+    $('#engine-grid').off('click.chiptoggle').on('click.chiptoggle', '.chip-toggle', function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        var $panel = $(this).closest('.inst-chip').find('.node-panel');
+        $panel.toggleClass('collapsed');
+        $(this).text($panel.hasClass('collapsed') ? '▾' : '▴');
+    });
+}
+
+function renderDashboard(data) {
+    renderSummary(data.summary);
+    $('#updated-at').text(data.updated_at ? (' · 更新于 ' + data.updated_at) : ' · 尚未探测');
+
+    var html = '';
+    var engines = data.engines || [];
+    for (var i = 0; i < engines.length; i++) {
+        if ((engines[i].summary || {}).total > 0) {
+            html += renderEnginePanel(engines[i]);
+        }
+    }
+    if (!html) {
+        html = '<div class="empty-tip" style="padding:30px;text-align:center;">暂无数据库实例，请先在「实例列表」中维护。</div>';
+    }
+    $('#engine-grid').html(html);
+    bindChipToggle();
+}
+
+function loadDashboard() {
+    return $.getJSON('/db-dashboard/api/').then(function(res) {
+        if (res.code === 0) {
+            renderDashboard(res);
+        }
+    });
+}
+
+function runProbe() {
+    showLoading(true);
+    return $.ajax({
+        url: '/db-dashboard/api/',
+        type: 'POST',
+        contentType: 'application/json',
+        data: '{}',
+        headers: {'X-CSRFToken': getCookie('csrftoken_dbatoolbox')}
+    }).always(function() {
+        showLoading(false);
+    }).then(function() {
+        return loadDashboard();
+    });
+}
+
+$('#btn-refresh').on('click', function() {
+    runProbe();
+});
+
+$(function() {
+    loadDashboard().then(function() {
+        runProbe();
+    });
+    setInterval(function() {
+        runProbe();
+    }, 60000);
+});
+</script>
+</body>
+</html>

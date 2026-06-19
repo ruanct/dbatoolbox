@@ -755,3 +755,205 @@ def delete_account(obj_id: Any) -> dict[str, Any]:
             first.is_default = True
             first.save(update_fields=["is_default"])
     return {"code": 0, "msg": "删除成功"}
+
+
+# ==================== 监控大屏 ====================
+
+DASHBOARD_ENGINE_ORDER = [value for value, _ in DatabaseInstance.ENGINE_CHOICES]
+DASHBOARD_TOPOLOGY_ORDER = ["ha_cluster", "replication", "standalone"]
+DASHBOARD_TOPOLOGY_LABELS = {
+    "ha_cluster": "高可用集群",
+    "replication": "复制集",
+    "standalone": "单实例",
+}
+
+
+def _serialize_dashboard_instance(
+    obj: DatabaseInstance,
+    *,
+    host_ip_map: dict[int, str] | None = None,
+) -> dict[str, Any]:
+    from .probe_services import PROBE_STATUS_LABELS, resolve_deploy_host_endpoint
+
+    data = {
+        "id": obj.id,
+        "instance_name": obj.instance_name,
+        "topology": obj.topology,
+        "connect_host": obj.connect_host,
+        "port": obj.port,
+        "probe_status": obj.probe_status,
+        "probe_status_label": _choice_label(PROBE_STATUS_LABELS, obj.probe_status),
+        "probe_message": obj.probe_message,
+        "latency_ms": obj.latency_ms,
+        "last_probed_at": obj.last_probed_at.strftime("%Y-%m-%d %H:%M:%S") if obj.last_probed_at else "",
+        "role": obj.role,
+        "role_label": _choice_label(ROLE_LABELS, obj.role),
+        "cluster_style": obj.cluster_style,
+        "cluster_style_label": _choice_label(CLUSTER_STYLE_LABELS, obj.cluster_style) if obj.cluster_style else "",
+        "environment": obj.environment.name,
+        "business": obj.business.name,
+        "replication_cluster_id": obj.replication_cluster_id,
+        "replication_cluster_name": obj.replication_cluster.name if obj.replication_cluster_id else "",
+        "deploy_hosts": [],
+    }
+    if obj.topology == "ha_cluster":
+        for deploy_host in obj.deploy_hosts.all():
+            connect_host, port = resolve_deploy_host_endpoint(deploy_host, host_ip_map=host_ip_map)
+            data["deploy_hosts"].append({
+                "id": deploy_host.id,
+                "node_name": deploy_host.node_name or str(deploy_host.host),
+                "host_display": str(deploy_host.host),
+                "connect_host": connect_host,
+                "port": port,
+                "node_sid": deploy_host.node_sid,
+                "node_service_name": deploy_host.node_service_name,
+                "is_primary": deploy_host.is_primary,
+                "probe_status": deploy_host.probe_status,
+                "probe_status_label": _choice_label(PROBE_STATUS_LABELS, deploy_host.probe_status),
+                "probe_message": deploy_host.probe_message,
+                "latency_ms": deploy_host.latency_ms,
+                "last_probed_at": (
+                    deploy_host.last_probed_at.strftime("%Y-%m-%d %H:%M:%S")
+                    if deploy_host.last_probed_at
+                    else ""
+                ),
+            })
+    return data
+
+
+def _accumulate_probe_status(summary: dict[str, int], status: str) -> None:
+    summary["total"] += 1
+    if status in summary:
+        summary[status] += 1
+    else:
+        summary["unknown"] += 1
+
+
+def _count_dashboard_summary(instances: list[DatabaseInstance]) -> dict[str, int]:
+    summary = {"total": 0, "alive": 0, "dead": 0, "maintenance": 0, "unknown": 0}
+    for instance in instances:
+        _accumulate_probe_status(summary, instance.probe_status)
+        if instance.topology == "ha_cluster":
+            for deploy_host in instance.deploy_hosts.all():
+                _accumulate_probe_status(summary, deploy_host.probe_status)
+    return summary
+
+
+def _build_topology_sections(
+    instances: list[DatabaseInstance],
+    *,
+    host_ip_map: dict[int, str] | None = None,
+) -> list[dict[str, Any]]:
+    grouped: dict[str, list[DatabaseInstance]] = {key: [] for key in DASHBOARD_TOPOLOGY_ORDER}
+    for instance in instances:
+        grouped.setdefault(instance.topology, []).append(instance)
+
+    sections: list[dict[str, Any]] = []
+    for topology in DASHBOARD_TOPOLOGY_ORDER:
+        items = grouped.get(topology, [])
+        section: dict[str, Any] = {
+            "topology": topology,
+            "topology_label": DASHBOARD_TOPOLOGY_LABELS[topology],
+            "summary": _count_dashboard_summary(items),
+            "instances": [],
+            "clusters": [],
+        }
+        if topology == "replication":
+            cluster_map: dict[int, dict[str, Any]] = {}
+            ungrouped: list[DatabaseInstance] = []
+            for instance in items:
+                if instance.replication_cluster_id:
+                    bucket = cluster_map.setdefault(
+                        instance.replication_cluster_id,
+                        {
+                            "cluster_id": instance.replication_cluster_id,
+                            "cluster_name": instance.replication_cluster.name,
+                            "instances": [],
+                        },
+                    )
+                    bucket["instances"].append(
+                        _serialize_dashboard_instance(instance, host_ip_map=host_ip_map),
+                    )
+                else:
+                    ungrouped.append(instance)
+            section["clusters"] = list(cluster_map.values())
+            section["instances"] = [
+                _serialize_dashboard_instance(item, host_ip_map=host_ip_map) for item in ungrouped
+            ]
+        else:
+            section["instances"] = [
+                _serialize_dashboard_instance(item, host_ip_map=host_ip_map) for item in items
+            ]
+        sections.append(section)
+    return sections
+
+
+def build_dashboard_data() -> dict[str, Any]:
+    from django.db.models import Prefetch
+    from django.utils import timezone
+
+    from .probe_services import _build_host_ip_map
+
+    queryset = (
+        DatabaseInstance.objects.select_related(
+            "environment", "business", "replication_cluster",
+        )
+        .prefetch_related(
+            Prefetch(
+                "deploy_hosts",
+                queryset=DatabaseInstanceHost.objects.select_related("host").order_by(
+                    "sort_order", "id",
+                ),
+            ),
+        )
+        .order_by("engine", "topology", "instance_name")
+    )
+    instance_list = list(queryset)
+    host_ids = {
+        deploy_host.host_id
+        for instance in instance_list
+        for deploy_host in instance.deploy_hosts.all()
+    }
+    host_ip_map = _build_host_ip_map(host_ids)
+
+    engine_map: dict[str, list[DatabaseInstance]] = {key: [] for key in DASHBOARD_ENGINE_ORDER}
+    for instance in instance_list:
+        engine_map.setdefault(instance.engine, []).append(instance)
+
+    engines: list[dict[str, Any]] = []
+    overall = {"total": 0, "alive": 0, "dead": 0, "maintenance": 0, "unknown": 0}
+    for engine in DASHBOARD_ENGINE_ORDER:
+        items = engine_map.get(engine, [])
+        summary = _count_dashboard_summary(items)
+        for key in overall:
+            overall[key] += summary.get(key, 0)
+        engines.append({
+            "engine": engine,
+            "engine_label": _choice_label(ENGINE_LABELS, engine),
+            "summary": summary,
+            "topologies": _build_topology_sections(items, host_ip_map=host_ip_map),
+        })
+
+    latest_instance_probe = (
+        DatabaseInstance.objects.exclude(last_probed_at__isnull=True)
+        .order_by("-last_probed_at")
+        .values_list("last_probed_at", flat=True)
+        .first()
+    )
+    latest_host_probe = (
+        DatabaseInstanceHost.objects.exclude(last_probed_at__isnull=True)
+        .order_by("-last_probed_at")
+        .values_list("last_probed_at", flat=True)
+        .first()
+    )
+    latest_probe = latest_instance_probe
+    if latest_host_probe and (not latest_probe or latest_host_probe > latest_probe):
+        latest_probe = latest_host_probe
+    return {
+        "code": 0,
+        "msg": "",
+        "updated_at": latest_probe.strftime("%Y-%m-%d %H:%M:%S") if latest_probe else "",
+        "summary": overall,
+        "engines": engines,
+        "server_time": timezone.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }

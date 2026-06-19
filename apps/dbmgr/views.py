@@ -9,6 +9,7 @@ from django.views.decorators.http import require_http_methods
 from .models import DatabaseInstance
 from .services import (
     ServiceError,
+    build_dashboard_data,
     create_account,
     create_deploy_host,
     create_instance,
@@ -30,6 +31,7 @@ from .services import (
     update_instance,
     update_replication_cluster,
 )
+from .probe_services import probe_all_instances
 
 
 def _json_service(handler: Callable[..., dict[str, Any]], *args: Any, **kwargs: Any) -> JsonResponse:
@@ -209,3 +211,23 @@ def account_api_view(request):
     if request.method == "PUT":
         return _json_from_body(update_account, request)
     return _json_from_body(lambda body: delete_account(body.get("id")), request)
+
+
+# ===== 监控大屏 =====
+
+@login_required
+def db_dashboard_view(request):
+    return render(request, "dbmgr/dashboard.html")
+
+
+@login_required
+def db_dashboard_table_view(request):
+    return render(request, "dbmgr/dashboard_table.html")
+
+
+@login_required
+@require_http_methods(["GET", "POST"])
+def db_dashboard_api_view(request):
+    if request.method == "POST":
+        return _json_service(probe_all_instances)
+    return _json_service(build_dashboard_data)

@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>数据库监控大屏（表格） - DBAToolbox</title>
+    <link rel="stylesheet" href="/static/layui.css">
+    <script src="/static/jquery.min.js"></script>
+    <style>
+        * { box-sizing: border-box; }
+        html, body {
+            height: 100%;
+            margin: 0;
+            background: #0b1220;
+            color: #d7e3f4;
+            font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+            font-size: 12px;
+        }
+        .screen-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 18px;
+            background: linear-gradient(90deg, #101b33 0%, #162544 100%);
+            border-bottom: 1px solid #1f3558;
+        }
+        .screen-title {
+            font-size: 20px;
+            font-weight: 600;
+        }
+        .screen-subtitle {
+            font-size: 12px;
+            color: #8ea6c8;
+            margin-top: 2px;
+        }
+        .summary-bar {
+            display: flex;
+            gap: 14px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .summary-item {
+            min-width: 56px;
+            text-align: center;
+        }
+        .summary-item .num {
+            font-size: 18px;
+            font-weight: 700;
+        }
+        .summary-item .label {
+            font-size: 11px;
+            color: #8ea6c8;
+        }
+        .num-alive { color: #5fb878; }
+        .num-dead { color: #ff5722; }
+        .num-maint { color: #9aa5b5; }
+        .num-unknown { color: #ffb800; }
+        .screen-body {
+            padding: 12px 16px 20px;
+            overflow: auto;
+            height: calc(100% - 72px);
+        }
+        .engine-grid {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .engine-panel {
+            background: #111c31;
+            border: 1px solid #203456;
+            border-radius: 6px;
+            overflow: hidden;
+        }
+        .engine-panel-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 12px;
+            background: #152742;
+            border-bottom: 1px solid #203456;
+        }
+        .engine-panel-title {
+            font-size: 15px;
+            font-weight: 600;
+        }
+        .engine-panel-stats {
+            font-size: 11px;
+            color: #8ea6c8;
+        }
+        .topology-stack {
+            display: flex;
+            flex-direction: column;
+        }
+        .topology-band {
+            border-bottom: 1px solid #1c2f4d;
+        }
+        .topology-band:last-child {
+            border-bottom: none;
+        }
+        .band-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 6px 12px;
+            background: rgba(255,255,255,0.02);
+            font-size: 12px;
+            font-weight: 600;
+            color: #b8cce6;
+        }
+        .band-summary {
+            font-size: 11px;
+            font-weight: normal;
+            color: #7f97b8;
+        }
+        .band-body {
+            padding: 4px 10px 8px;
+        }
+        .cluster-group {
+            margin-bottom: 8px;
+        }
+        .cluster-group:last-child {
+            margin-bottom: 0;
+        }
+        .cluster-label {
+            font-size: 11px;
+            color: #8ea6c8;
+            margin-bottom: 4px;
+            padding-left: 2px;
+        }
+        .monitor-table {
+            width: 100%;
+            border-collapse: collapse;
+            table-layout: fixed;
+        }
+        .monitor-table th,
+        .monitor-table td {
+            padding: 4px 8px;
+            text-align: left;
+            border-bottom: 1px solid #1c2f4d;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            vertical-align: middle;
+        }
+        .monitor-table th {
+            font-size: 11px;
+            font-weight: 600;
+            color: #8ea6c8;
+            background: rgba(255,255,255,0.03);
+        }
+        .monitor-table tbody tr:hover {
+            background: rgba(255,255,255,0.03);
+        }
+        .monitor-table .col-status { width: 36px; text-align: center; }
+        .monitor-table .col-name { width: 16%; }
+        .monitor-table .col-addr { width: 18%; }
+        .monitor-table .col-env { width: 12%; }
+        .monitor-table .col-role { width: 12%; }
+        .monitor-table .col-latency { width: 56px; text-align: right; }
+        .monitor-table .col-msg { width: auto; }
+        .status-dot {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+        }
+        .status-alive .status-dot { background: #5fb878; }
+        .status-dead .status-dot { background: #ff5722; }
+        .status-maintenance .status-dot { background: #9aa5b5; }
+        .status-unknown .status-dot { background: #ffb800; }
+        .row-instance td {
+            font-weight: 600;
+            color: #e8f0fa;
+        }
+        .row-node td {
+            color: #a8bdd8;
+            font-size: 11px;
+        }
+        .row-node .name-cell {
+            padding-left: 22px;
+            position: relative;
+        }
+        .row-node .name-cell::before {
+            content: "└";
+            position: absolute;
+            left: 8px;
+            color: #4a6280;
+        }
+        .row-dead .col-msg {
+            color: #ff9f7f;
+        }
+        .latency-ok { color: #8ea6c8; }
+        .latency-bad { color: #ff5722; }
+        .empty-tip {
+            color: #607892;
+            font-size: 11px;
+            padding: 4px 2px;
+        }
+        .loading-mask {
+            position: fixed;
+            inset: 0;
+            background: rgba(11,18,32,0.65);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 9999;
+            color: #d7e3f4;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+<div class="loading-mask" id="loading-mask">探测中，请稍候...</div>
+
+<div class="screen-header">
+    <div>
+        <div class="screen-title">数据库监控大屏（表格视图）</div>
+        <div class="screen-subtitle">
+            按数据库类型 / 部署拓扑以表格展示实例存活状态
+            <span id="updated-at"></span>
+        </div>
+    </div>
+    <div class="summary-bar" id="summary-bar">
+        <div class="summary-item"><div class="num" id="sum-total">0</div><div class="label">总数</div></div>
+        <div class="summary-item"><div class="num num-alive" id="sum-alive">0</div><div class="label">正常</div></div>
+        <div class="summary-item"><div class="num num-dead" id="sum-dead">0</div><div class="label">异常</div></div>
+        <div class="summary-item"><div class="num num-maint" id="sum-maint">0</div><div class="label">维护</div></div>
+        <div class="summary-item"><div class="num num-unknown" id="sum-unknown">0</div><div class="label">未探测</div></div>
+        <button class="layui-btn layui-btn-xs layui-btn-normal" id="btn-refresh">立即探测</button>
+        <a href="/db-dashboard/" class="layui-btn layui-btn-xs layui-btn-warm">卡片视图</a>
+        <a href="/db-instance/" class="layui-btn layui-btn-xs layui-btn-primary">返回后台</a>
+    </div>
+</div>
+
+<div class="screen-body">
+    <div class="engine-grid" id="engine-grid"></div>
+</div>
+
+<script>
+function getCookie(name) {
+    var r = document.cookie.match("\\b" + name + "=([^;]*)\\b");
+    return r ? r[1] : '';
+}
+
+function escapeHtml(str) {
+    return String(str || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+function showLoading(show) {
+    $('#loading-mask').css('display', show ? 'flex' : 'none');
+}
+
+function renderSummary(summary) {
+    summary = summary || {};
+    $('#sum-total').text(summary.total || 0);
+    $('#sum-alive').text(summary.alive || 0);
+    $('#sum-dead').text(summary.dead || 0);
+    $('#sum-maint').text(summary.maintenance || 0);
+    $('#sum-unknown').text(summary.unknown || 0);
+}
+
+function statusDot(status) {
+    return '<span class="status-dot"></span>';
+}
+
+function latencyCell(latencyMs, status) {
+    var text = latencyMs ? (latencyMs + 'ms') : '-';
+    var cls = status === 'dead' ? 'latency-bad' : 'latency-ok';
+    return '<span class="' + cls + '">' + text + '</span>';
+}
+
+function roleLabel(inst) {
+    if (inst.topology === 'ha_cluster' && inst.cluster_style_label) {
+        return inst.cluster_style_label;
+    }
+    if (inst.role_label) {
+        return inst.role_label;
+    }
+    if (inst.replication_cluster_name) {
+        return inst.replication_cluster_name;
+    }
+    return '-';
+}
+
+function messageCell(text, status) {
+    if (status !== 'dead' || !text) {
+        return '';
+    }
+    return escapeHtml(text);
+}
+
+function renderInstanceRows(inst) {
+    var status = inst.probe_status || 'unknown';
+    var addr = inst.topology === 'ha_cluster'
+        ? ('集群入口 ' + inst.connect_host + ':' + inst.port)
+        : (inst.connect_host + ':' + inst.port);
+    var envBiz = inst.environment + '/' + inst.business;
+    var rowCls = 'row-instance status-' + status;
+    if (status === 'dead') {
+        rowCls += ' row-dead';
+    }
+    var html = '<tr class="' + rowCls + '">'
+        + '<td class="col-status">' + statusDot(status) + '</td>'
+        + '<td class="col-name" title="' + escapeHtml(inst.instance_name) + '">' + escapeHtml(inst.instance_name) + '</td>'
+        + '<td class="col-addr" title="' + escapeHtml(addr) + '">' + escapeHtml(addr) + '</td>'
+        + '<td class="col-env" title="' + escapeHtml(envBiz) + '">' + escapeHtml(envBiz) + '</td>'
+        + '<td class="col-role">' + escapeHtml(roleLabel(inst)) + '</td>'
+        + '<td class="col-latency">' + latencyCell(inst.latency_ms, status) + '</td>'
+        + '<td class="col-msg" title="' + escapeHtml(inst.probe_message || '') + '">' + messageCell(inst.probe_message, status) + '</td>'
+        + '</tr>';
+
+    if (inst.deploy_hosts && inst.deploy_hosts.length) {
+        for (var i = 0; i < inst.deploy_hosts.length; i++) {
+            html += renderNodeRow(inst.deploy_hosts[i]);
+        }
+    }
+    return html;
+}
+
+function renderNodeRow(node) {
+    var status = node.probe_status || 'unknown';
+    var addr = node.connect_host + ':' + node.port;
+    var name = node.node_name + (node.is_primary ? ' · 首选' : '');
+    var sidLabel = node.node_sid ? (' SID:' + node.node_sid) : '';
+    var rowCls = 'row-node status-' + status;
+    if (status === 'dead') {
+        rowCls += ' row-dead';
+    }
+    return '<tr class="' + rowCls + '">'
+        + '<td class="col-status">' + statusDot(status) + '</td>'
+        + '<td class="col-name name-cell" title="' + escapeHtml(name) + '">' + escapeHtml(name) + '</td>'
+        + '<td class="col-addr" title="' + escapeHtml(addr + sidLabel) + '">' + escapeHtml(addr) + '</td>'
+        + '<td class="col-env">' + (node.host_display ? escapeHtml(node.host_display) : '-') + '</td>'
+        + '<td class="col-role">' + (node.probe_status_label || '未探测') + '</td>'
+        + '<td class="col-latency">' + latencyCell(node.latency_ms, status) + '</td>'
+        + '<td class="col-msg" title="' + escapeHtml(node.probe_message || '') + '">' + messageCell(node.probe_message, status) + '</td>'
+        + '</tr>';
+}
+
+function renderTableHead() {
+    return '<table class="monitor-table">'
+        + '<thead><tr>'
+        + '<th class="col-status">状态</th>'
+        + '<th class="col-name">实例/节点</th>'
+        + '<th class="col-addr">地址</th>'
+        + '<th class="col-env">环境/主机</th>'
+        + '<th class="col-role">角色/类型</th>'
+        + '<th class="col-latency">延迟</th>'
+        + '<th class="col-msg">说明</th>'
+        + '</tr></thead><tbody>';
+}
+
+function renderInstancesTable(instances) {
+    if (!instances || !instances.length) {
+        return '';
+    }
+    var html = renderTableHead();
+    for (var i = 0; i < instances.length; i++) {
+        html += renderInstanceRows(instances[i]);
+    }
+    html += '</tbody></table>';
+    return html;
+}
+
+function renderTopologyBand(section) {
+    var summary = section.summary || {};
+    var html = '<div class="topology-band">'
+        + '<div class="band-header">'
+        + '<span>' + escapeHtml(section.topology_label) + '</span>'
+        + '<span class="band-summary">共' + (summary.total || 0)
+        + ' · 正常' + (summary.alive || 0)
+        + ' · 异常' + (summary.dead || 0) + '</span>'
+        + '</div><div class="band-body">';
+
+    var hasContent = false;
+    if (section.clusters && section.clusters.length) {
+        for (var i = 0; i < section.clusters.length; i++) {
+            var cluster = section.clusters[i];
+            html += '<div class="cluster-group">'
+                + '<div class="cluster-label">' + escapeHtml(cluster.cluster_name) + '</div>'
+                + renderInstancesTable(cluster.instances)
+                + '</div>';
+            hasContent = true;
+        }
+    }
+    if (section.instances && section.instances.length) {
+        if (section.topology === 'replication' && section.clusters && section.clusters.length) {
+            html += '<div class="cluster-group">'
+                + '<div class="cluster-label">未归属复制集</div>'
+                + renderInstancesTable(section.instances)
+                + '</div>';
+        } else {
+            html += renderInstancesTable(section.instances);
+        }
+        hasContent = true;
+    }
+    if (!hasContent) {
+        html += '<div class="empty-tip">暂无实例</div>';
+    }
+    html += '</div></div>';
+    return html;
+}
+
+function renderEnginePanel(engineData) {
+    var summary = engineData.summary || {};
+    var html = '<div class="engine-panel">'
+        + '<div class="engine-panel-header">'
+        + '<div class="engine-panel-title">' + escapeHtml(engineData.engine_label) + '</div>'
+        + '<div class="engine-panel-stats">'
+        + (summary.total || 0) + ' 监测项 · 正常 ' + (summary.alive || 0)
+        + ' · 异常 ' + (summary.dead || 0)
+        + '</div></div><div class="topology-stack">';
+
+    var topologies = engineData.topologies || [];
+    for (var i = 0; i < topologies.length; i++) {
+        html += renderTopologyBand(topologies[i]);
+    }
+    html += '</div></div>';
+    return html;
+}
+
+function renderDashboard(data) {
+    renderSummary(data.summary);
+    $('#updated-at').text(data.updated_at ? (' · 更新于 ' + data.updated_at) : ' · 尚未探测');
+
+    var html = '';
+    var engines = data.engines || [];
+    for (var i = 0; i < engines.length; i++) {
+        if ((engines[i].summary || {}).total > 0) {
+            html += renderEnginePanel(engines[i]);
+        }
+    }
+    if (!html) {
+        html = '<div class="empty-tip" style="padding:30px;text-align:center;">暂无数据库实例，请先在「实例列表」中维护。</div>';
+    }
+    $('#engine-grid').html(html);
+}
+
+function loadDashboard() {
+    return $.getJSON('/db-dashboard/api/').then(function(res) {
+        if (res.code === 0) {
+            renderDashboard(res);
+        }
+    });
+}
+
+function runProbe() {
+    showLoading(true);
+    return $.ajax({
+        url: '/db-dashboard/api/',
+        type: 'POST',
+        contentType: 'application/json',
+        data: '{}',
+        headers: {'X-CSRFToken': getCookie('csrftoken_dbatoolbox')}
+    }).always(function() {
+        showLoading(false);
+    }).then(function() {
+        return loadDashboard();
+    });
+}
+
+$('#btn-refresh').on('click', function() {
+    runProbe();
+});
+
+$(function() {
+    loadDashboard().then(function() {
+        runProbe();
+    });
+    setInterval(function() {
+        runProbe();
+    }, 60000);
+});
+</script>
+</body>
+</html>
