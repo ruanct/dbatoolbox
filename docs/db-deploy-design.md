@@ -342,9 +342,198 @@ deploy/                    # 项目根目录，不进 Python 包
    - 内网 yum / apt 源（推荐，运维可控）
    - 平台上传 tar / rpm（灵活但占存储）
 
+3. **第一期支持哪些版本？**
+   - 建议先锁定生产在用的版本（如 MySQL 5.7.42、Oracle 19c），再逐步加 profile
+
 ---
 
-## 八、小结
+## 八、多版本安装：MySQL / Oracle 版本如何考虑
+
+Oracle 和 MySQL 均存在多个大版本、小版本及不同安装方式。若不在设计阶段单独建模，后期每加一个版本就会复制一套 Playbook，维护成本会迅速失控。
+
+### 8.1 先区分三个概念（不要混为一谈）
+
+| 概念 | 含义 | 示例 |
+|------|------|------|
+| **版本档案（Version Profile）** | 用户在下拉框里选的「可部署版本」 | `mysql-5.7.42`、`mysql-8.0.36`、`oracle-19c` |
+| **安装介质（Package / Media）** | 实际用到的 rpm / tar / 内网 repo | `mysql-community-server-5.7.42-1.el7.x86_64.rpm` |
+| **部署配方（Recipe / Playbook 变体）** | 该版本对应的安装步骤与默认参数 | 5.7 用 `--initialize-insecure`；8.0 默认 caching_sha2_password |
+
+**DeployJob.params 里只存 `version_profile_id`（或 profile 编码）+ 用户覆盖项**；介质路径、默认路径、兼容 OS 等从 Profile 解析，不要每次让用户手填。
+
+### 8.2 与现有 CMDB 的关系
+
+`DatabaseInstance.version`（`CharField(max_length=32)`）继续表示**实例实际运行版本**，由部署 verify 步骤探测后写入，例如：
+
+- MySQL：`5.7.42`、`8.0.36`
+- Oracle：`19.20.0.0.0`（或台账简写 `19c` + 备注存 RU）
+
+部署任务侧额外记录：
+
+- `version_profile`：发起部署时选择的档案
+- `result.detected_version`：安装完成后 `SELECT VERSION()` / `v$instance` 探测结果
+
+两者可能不一致时（如选了 19c profile 实际打了 RU），以 **detected_version 写入 CMDB** 为准。
+
+### 8.3 建议新增：版本档案（Version Profile）
+
+第一期可用 YAML 文件；实例部署多了再落库 `DbDeployVersionProfile`。
+
+**推荐字段：**
+
+```python
+# DbDeployVersionProfile（后期）
+engine              # mysql / oracle
+profile_code        # mysql-5.7.42 / oracle-19c（唯一）
+display_name        # MySQL 5.7.42
+major_version       # 5.7 / 8.0 / 19 / 21
+minor_version       # 42 / 36 / 可选
+status              # enabled / deprecated / disabled
+supported_os        # JSON: ["centos7", "rocky8"]
+supported_job_types # JSON: ["mysql_standalone", "mysql_replica"]
+install_method      # yum / rpm / tar / oracle_runinstaller
+package_ref         # 介质标识或内网 repo 名
+default_params      # JSON: datadir、字符集、oracle_home 模板等
+playbook_variant    # install_5_7 / install_8_0 / install_19c
+min_memory_gb       # 预检查用
+remark
+```
+
+**第一期 MVP 可放在 `deploy/profiles/`：**
+
+```
+deploy/profiles/
+├── mysql/
+│   ├── 5.7.42.yml
+│   └── 8.0.36.yml
+└── oracle/
+    ├── 19c.yml
+    └── 21c.yml
+```
+
+### 8.4 MySQL 多版本差异要点
+
+| 维度 | 5.7.x | 8.0.x |
+|------|-------|-------|
+| 初始化 | `mysqld --initialize-insecure` / `--initialize` | 同左，默认认证插件不同 |
+| 默认认证 | `mysql_native_password` | `caching_sha2_password` |
+| 复制 | GTID 可选 | GTID 推荐默认 |
+| MGR | 不支持 | 仅 8.0+ |
+| 配置 | `my.cnf`，部分参数 8.0 已废弃 | `mysql_native_password` 需显式配置时常见 |
+| 服务名 | `mysqld` / `mysql` | 同左，路径可能不同 |
+
+**设计建议：**
+
+1. **大版本分 Playbook 变体**（`install_5_7` / `install_8_0`），小版本（5.7.41 vs 5.7.42）通常只改 `package_ref`。
+2. **加从库时**：主从 `major_version` 必须一致或落在兼容矩阵内（5.7→5.7，8.0→8.0；跨大版本只做升级项目，不做部署向导默认路径）。
+3. **加 MGR 成员**：Profile 必须 `major_version=8.0` 且 `supported_job_types` 含 `mysql_mgr_member`。
+4. 项目当前生产为 **MySQL 5.7.42**（见 `CLAUDE.md`），MVP 优先支持该 profile。
+
+### 8.5 Oracle 多版本差异要点
+
+| 维度 | 说明 |
+|------|------|
+| 营销版本 vs 补丁 | 用户选 `19c`，实际还有 RU（如 19.20）；Profile 可指向「19c 基线 + 推荐 RU」 |
+| ORACLE_HOME | 19c 与 21c 路径、安装包、DBCA 模板不同，必须进 `default_params` |
+| 安装方式 | 单实例：`runInstaller` + DBCA silent；RAC 还需 Grid Infrastructure |
+| OS 兼容 | Oracle 对 OS 版本要求严，Profile 必须绑 `supported_os` |
+| 字符集 / 内存 | DBCA 响应文件随版本略有差异 |
+
+**设计建议：**
+
+1. Profile 用 **`oracle-19c`、`oracle-21c`** 等编码，不要只存模糊字符串 `"19c"`。
+2. **RAC / ADG 节点**：新节点 Profile 的 `major_version` 必须与集群一致，precheck 读已有实例的 `version` 或 Grid 版本比对。
+3. 第一期若只做「软件 + listener + 手工 DBCA」，Profile 仍要预留 `dbca_response_template` 字段，便于第二期 silent 安装。
+4. 台账 `DatabaseInstance.version` 建议存 **探测到的完整版本号**；展示层可再映射为 `19c`。
+
+### 8.6 版本兼容矩阵（预检查 + 扩展场景）
+
+在 `services.py` 部署校验层维护（或 Profile 配置）：
+
+| 场景 | 版本规则 |
+|------|----------|
+| MySQL 单实例 | Profile.enabled + OS 匹配即可 |
+| MySQL 从库 | 从库 major = 主库 major；8.0 主不能挂 5.7 从 |
+| MySQL MGR 成员 | 必须 8.0+；与集群已有成员 major 一致 |
+| Oracle 单实例 | Profile + OS 匹配 |
+| Oracle RAC 新节点 | 与现有 RAC 同 major；Grid 版本已满足 |
+
+预检查失败应 **在 Job 进入 running 前拒绝**，并返回可读原因（如「目标主机 Rocky 8 不支持 oracle-19c profile」）。
+
+### 8.7 前端交互建议
+
+1. 用户先选 **数据库类型** → 再选 **版本档案**（下拉仅显示 `status=enabled` 且与目标主机 OS 兼容的项）。
+2. 选中 Profile 后 **自动填充** datadir、端口、字符集、oracle_home 等默认值，用户可改。
+3. Profile 标记 `deprecated` 的仍可见但提示「建议新版本」，禁止新生产部署可选 `disabled`。
+4. 部署任务详情页展示：`profile_code` + 安装完成后 `detected_version`。
+
+### 8.8 Playbook / 目录组织（按版本变体）
+
+```
+deploy/
+├── profiles/                    # 版本档案 YAML（或后期改 DB）
+├── playbooks/
+│   ├── mysql/standalone/site.yml    # 入口，根据 profile  include 变体
+│   └── oracle/standalone/site.yml
+└── roles/
+    ├── mysql/
+    │   ├── install_5_7/
+    │   ├── install_8_0/
+    │   ├── configure_5_7/
+    │   └── configure_8_0/
+    └── oracle/
+        ├── install_19c/
+        ├── install_21c/
+        └── dbca_19c/
+```
+
+入口 Playbook 伪逻辑：
+
+```yaml
+# site.yml
+- include_role:
+    name: "mysql/{{ profile.playbook_variant }}"
+  vars:
+    package_ref: "{{ profile.package_ref }}"
+    default_params: "{{ profile.default_params }}"
+```
+
+**共用 role**（precheck、start_service、register_cmdb）与 **版本专属 role**（install、initialize）分离，避免复制。
+
+### 8.9 介质管理（与版本档案配合）
+
+| 方式 | 适用 | 注意 |
+|------|------|------|
+| 内网 yum / apt 源 | MySQL 5.7/8.0、部分 Oracle | Profile 只存 repo 名 + 包名模式 |
+| 共享 NFS 目录 | Oracle tar/runInstaller | Profile 存 `media_path` |
+| 平台上传 | 非常规版本 | 后期 `DbDeployPackage` 表：checksum、上传人、过期策略 |
+
+同一 Profile 只指向 **一种主安装方式**；换方式则新建 Profile（如 `mysql-5.7.42-yum` vs `mysql-5.7.42-rpm`）。
+
+### 8.10 分阶段落地建议
+
+| 阶段 | 版本能力 |
+|------|----------|
+| **第一期 MVP** | 2～3 个 YAML Profile（如 MySQL 5.7.42、Oracle 19c）；代码内解析；不做版本管理页 |
+| **第二期** | `DbDeployVersionProfile` 表 + 后台维护；主从 / MGR 版本校验 |
+| **第三期** | 介质库、deprecated 策略、RU 升级 playbook（与「新装」分离） |
+
+**不要第一期就支持「任意版本」**；每增加一个 Profile，需配套：precheck 规则、install role、verify 命令、（可选）CMDB 默认值模板，并在一台测试机跑通。
+
+### 8.11 小结（多版本）
+
+| 问题 | 建议 |
+|------|------|
+| 用户选的 version 是什么？ | **Version Profile**（可选列表项），不是自由文本 |
+| 小版本怎么办？ | 同 major 共用 Playbook，只改 package_ref |
+| 大版本怎么办？ | 独立 `install_X_Y` role + 独立 default_params |
+| 和 CMDB 怎么同步？ | 部署成功写 `DatabaseInstance.version = detected_version` |
+| 从库 / RAC 怎么控版本？ | 预检查：与主库 / 集群 major 一致 |
+| 第一期做多少？ | 只做生产在用的 1～2 个 Profile，架构按 Profile 扩展 |
+
+---
+
+## 九、小结
 
 | 问题 | 建议 |
 |------|------|
@@ -353,6 +542,7 @@ deploy/                    # 项目根目录，不进 Python 包
 | 怎么扩展？ | 新 job_type + 新 Executor + 组合已有 Ansible role；params 里带 context / cluster 关联已有对象 |
 | 现有代码怎么用？ | 复用 Host 台账、Ansible 执行、Celery；**不要**复用 BatchTask 当部署引擎 |
 | 模型要改吗？ | CMDB **基本不用改**；新增 DeployJob 相关表即可 |
+| 多版本怎么管？ | **Version Profile** 统一档案；大版本分 Playbook 变体，小版本改介质即可 |
 
 ---
 
@@ -367,4 +557,4 @@ deploy/                    # 项目根目录，不进 Python 包
 
 ---
 
-*文档版本：初稿 · 与项目 dbatoolbox Django 5.2 + LayUI + Celery + Ansible 技术栈对齐*
+*文档版本：v1.1 · 补充多版本安装设计 · 与项目 dbatoolbox Django 5.2 + LayUI + Celery + Ansible 技术栈对齐*
