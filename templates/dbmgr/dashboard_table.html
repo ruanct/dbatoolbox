@@ -65,11 +65,26 @@
             flex-direction: column;
             gap: 12px;
         }
+        .engine-split-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+            align-items: start;
+        }
+        .engine-column {
+            min-width: 0;
+        }
+        @media (max-width: 1100px) {
+            .engine-split-row {
+                grid-template-columns: 1fr;
+            }
+        }
         .engine-panel {
             background: #111c31;
             border: 1px solid #203456;
             border-radius: 6px;
             overflow: hidden;
+            height: 100%;
         }
         .engine-panel-header {
             display: flex;
@@ -151,12 +166,12 @@
         .monitor-table tbody tr:hover {
             background: rgba(255,255,255,0.03);
         }
-        .monitor-table .col-status { width: 36px; text-align: center; }
-        .monitor-table .col-name { width: 16%; }
-        .monitor-table .col-addr { width: 18%; }
-        .monitor-table .col-env { width: 12%; }
+        .monitor-table .col-status { width: 40px; text-align: center; }
+        .monitor-table .col-name { width: 20%; }
+        .monitor-table .col-addr { width: 20%; }
+        .monitor-table .col-env { width: 14%; }
         .monitor-table .col-role { width: 12%; }
-        .monitor-table .col-latency { width: 56px; text-align: right; }
+        .monitor-table .col-latency { width: 10%; text-align: right; }
         .monitor-table .col-msg { width: auto; }
         .status-dot {
             display: inline-block;
@@ -296,7 +311,7 @@ function messageCell(text, status) {
 function renderInstanceRows(inst) {
     var status = inst.probe_status || 'unknown';
     var addr = inst.topology === 'ha_cluster'
-        ? ('集群入口 ' + inst.connect_host + ':' + inst.port)
+        ? (inst.connect_host + ':' + inst.port + ' (集群)')
         : (inst.connect_host + ':' + inst.port);
     var envBiz = inst.environment + '/' + inst.business;
     var rowCls = 'row-instance status-' + status;
@@ -347,8 +362,8 @@ function renderTableHead() {
         + '<th class="col-status">状态</th>'
         + '<th class="col-name">实例/节点</th>'
         + '<th class="col-addr">地址</th>'
-        + '<th class="col-env">环境/主机</th>'
-        + '<th class="col-role">角色/类型</th>'
+        + '<th class="col-env">环境/业务</th>'
+        + '<th class="col-role">角色</th>'
         + '<th class="col-latency">延迟</th>'
         + '<th class="col-msg">说明</th>'
         + '</tr></thead><tbody>';
@@ -405,6 +420,32 @@ function renderTopologyBand(section) {
     return html;
 }
 
+function findEngineData(engines, engineKey) {
+    for (var i = 0; i < engines.length; i++) {
+        if (engines[i].engine === engineKey) {
+            return engines[i];
+        }
+    }
+    return null;
+}
+
+function renderEngineColumn(engineKey, engineLabel, engineData) {
+    var html = '<div class="engine-column" data-engine="' + engineKey + '">';
+    if (engineData && (engineData.summary || {}).total > 0) {
+        html += renderEnginePanel(engineData);
+    } else {
+        html += '<div class="engine-panel">'
+            + '<div class="engine-panel-header">'
+            + '<div class="engine-panel-title">' + escapeHtml(engineLabel) + '</div>'
+            + '<div class="engine-panel-stats">0 监测项</div>'
+            + '</div>'
+            + '<div class="band-body"><div class="empty-tip">暂无实例</div></div>'
+            + '</div>';
+    }
+    html += '</div>';
+    return html;
+}
+
 function renderEnginePanel(engineData) {
     var summary = engineData.summary || {};
     var html = '<div class="engine-panel">'
@@ -427,15 +468,23 @@ function renderDashboard(data) {
     renderSummary(data.summary);
     $('#updated-at').text(data.updated_at ? (' · 更新于 ' + data.updated_at) : ' · 尚未探测');
 
-    var html = '';
     var engines = data.engines || [];
+    var mysqlData = findEngineData(engines, 'mysql');
+    var oracleData = findEngineData(engines, 'oracle');
+
+    var html = '<div class="engine-split-row">'
+        + renderEngineColumn('mysql', 'MySQL', mysqlData)
+        + renderEngineColumn('oracle', 'Oracle', oracleData)
+        + '</div>';
+
     for (var i = 0; i < engines.length; i++) {
-        if ((engines[i].summary || {}).total > 0) {
-            html += renderEnginePanel(engines[i]);
+        var eng = engines[i];
+        if (eng.engine === 'mysql' || eng.engine === 'oracle') {
+            continue;
         }
-    }
-    if (!html) {
-        html = '<div class="empty-tip" style="padding:30px;text-align:center;">暂无数据库实例，请先在「实例列表」中维护。</div>';
+        if ((eng.summary || {}).total > 0) {
+            html += renderEnginePanel(eng);
+        }
     }
     $('#engine-grid').html(html);
 }
