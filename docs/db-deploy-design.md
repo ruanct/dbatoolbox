@@ -81,7 +81,7 @@ pending → prechecking → running → verifying → succeeded
 
 ### 3.1 建议新增模型
 
-建议在 `apps/dbmgr` 或独立 `apps/dbdeploy` 中新增：
+建议在 `apps/dbmgr`  中新增：
 
 **最小集合：**
 
@@ -104,6 +104,8 @@ pending → prechecking → running → verifying → succeeded
 第一版可以不建 `DbDeployTemplate` 表，模板写死在代码 / JSON 文件里；实例多了再加「版本模板管理页」。
 
 ### 3.2 单实例部署参数示例
+
+> 完整参数分层、Schema、校验与 CMDB 映射见 **第四章「实例安装参数配置设计」**。以下为简化示例。
 
 **MySQL standalone `params`：**
 
@@ -174,9 +176,382 @@ pending → prechecking → running → verifying → succeeded
 
 ---
 
-## 四、未来扩展：从库 / MGR 成员 / RAC
+## 四、实例安装参数配置设计
 
-### 4.1 与现有模型对齐
+当前文档在 §3.2 仅有 JSON 示例，§5.3 仅提到参数分三层，**缺少对「参数从哪来、怎么校验、怎么落到安装与 CMDB」的完整设计**。本章专门补齐这一块。
+
+### 4.1 核心思路：四套参数，不要混在一个 JSON 里
+
+| 层级 | 存放位置 | 含义 | 生命周期 |
+|------|----------|------|----------|
+| **Profile 默认参数** | Version Profile 的 `default_params` | 版本 + 场景推荐的默认值 | 档案维护时配置 |
+| **Job 用户参数** | `DbDeployJob.params` | 用户表单提交 / 覆盖项 | 创建任务时写入，只读归档 |
+| **Resolved 合并参数** | 内存计算，可写入 `Job.resolved_params` 快照 | Profile 默认 + 用户覆盖 + 主机推导 | 执行前生成，供 Ansible 使用 |
+| **Result 实际参数** | `DbDeployJob.result` | 安装完成后探测到的真实值 | verify 步骤写入 |
+| **CMDB 台账字段** | `DatabaseInstance` 等 | 运维长期可见的元数据 | register_cmdb 步骤写入 |
+
+**原则：**
+
+1. 用户**不手填** Profile 已能确定的项（如 5.7 默认路径、推荐字符集），除非打开「高级选项」覆盖。
+2. **安装过程参数**（datadir、oracle_home）与 **台账参数**（instance_name、connect_host）分开建模，避免 CMDB 字段膨胀。
+3. **敏感参数**（密码）单独标记，日志脱敏，CMDB 只落账号表，不回显到 Job 详情。
+
+### 4.2 参数分类（按用途）
+
+#### ① 台账参数（部署成功后写入 CMDB）
+
+与现有 `DatabaseInstance` / `DatabaseAccount` 字段对齐：
+
+| 参数名 | 对应 CMDB | 必填 | 说明 |
+|--------|-----------|------|------|
+| `instance_name` | `DatabaseInstance.instance_name` | 是 | 全局唯一 |
+| `environment_id` | `environment` | 是 | FK |
+| `business_id` | `business` | 是 | FK |
+| `engine` | `engine` | 是 | 由 job_type 推导 |
+| `topology` | `topology` | 是 | standalone / replication / ha_cluster |
+| `role` | `role` | 单实例默认 master | 从库场景为 slave |
+| `connect_host` | `connect_host` | 是 | 默认可从目标主机业务 IP 推导 |
+| `port` | `port` | 是 | MySQL 3306 / Oracle 1521 |
+| `db_name` | `db_name` | MySQL 可选 | 默认库 |
+| `charset` | `charset` | 可选 | utf8mb4 / AL32UTF8 |
+| `sid` | `sid` | Oracle 单实例 | 与 service_name 至少一项 |
+| `service_name` | `service_name` | Oracle | 连接用 |
+| `version_profile_code` | 不直接入库 | 是 | 写入 Job；`version` 字段用 detected_version |
+| `admin_account` | `DatabaseAccount` | 建议 | name / password / grant_host / account_type |
+
+#### ② 安装路径与资源参数（仅部署过程使用，写入 Job.result）
+
+| 参数名 | MySQL 示例 | Oracle 示例 | 说明 |
+|--------|------------|-------------|------|
+| `basedir` | `/usr` 或自定义 | — | 软件安装根 |
+| `datadir` | `/data/mysql` | `/u01/oradata` | 数据目录 |
+| `log_dir` / `binlog_dir` | `/data/mysql/logs` | — | 日志与 binlog |
+| `oracle_base` | — | `/u01/app/oracle` | Oracle 基目录 |
+| `oracle_home` | — | `.../19c/dbhome_1` | 由 Profile 默认 |
+| `memory_target_mb` | `innodb_buffer_pool` 等 | DBCA 内存 | 预检查内存是否够 |
+| `disk_gb_min` | 预检查用 | 预检查用 | 可与 datadir 所在盘联动 |
+
+这些**不要**长期挂在 `DatabaseInstance` 上；若日后运维需要，可放 `remark` 或单独「实例扩展属性」表，第一版不必做。
+
+**安装介质（MySQL tar.gz / Oracle zip）** 不放在用户表单里，由 Version Profile 提供 `media_base_url`、`media_subdir`（Oracle）、`package_filename`（当前环境见 §9.9.1、§9.9.2），合并进 `resolved_params.media` 供 Ansible 下载。
+
+#### ③ 数据库配置参数（生成配置文件，非 CMDB 主字段）
+
+| 参数名 | 作用 | 落点 |
+|--------|------|------|
+| `character_set` / `collation` | 库字符集 | my.cnf / DBCA |
+| `innodb_buffer_pool_size` | 内存 | my.cnf |
+| `max_connections` | 连接数 | my.cnf |
+| `sql_mode` | 5.7 常见 | my.cnf |
+| `default_authentication_plugin` | 8.0 | my.cnf |
+| `processes` / `sessions` | Oracle | init.ora / DBCA |
+| `redolog_size_mb` | Oracle | DBCA |
+
+**实现方式：** Resolved 参数 → Ansible template 渲染 `my.cnf.j2`、`dbca.rsp.j2`，不要让用户在表单里粘贴整份配置文件（MVP）；高级选项可提供 `extra_cnf_lines` 文本框（可选）。
+
+#### ④ 账号与凭证参数（敏感）
+
+```json
+{
+  "credentials": {
+    "root_password": "***",
+    "sys_password": "***",
+    "system_password": "***",
+    "admin_account": {
+      "account_name": "dba",
+      "account_pswd": "***",
+      "grant_host": "%",
+      "account_type": "admin"
+    },
+    "repl_account": {
+      "account_name": "repl",
+      "account_pswd": "***",
+      "grant_host": "10.1.%"
+    }
+  }
+}
+```
+
+- 存入 `Job.params` 时可加密或任务完成后擦除明文，仅保留「已创建账号」标记。
+- 步骤日志、Ansible output **必须脱敏**后再写 `DbDeployJobStep.output`。
+- 成功后写入 `DatabaseAccount`，与现有实例账号维护一致。
+
+#### ⑤ 场景上下文参数（扩展场景）
+
+| job_type | 典型 context 参数 |
+|----------|-------------------|
+| `mysql_replica` | `replication_cluster_id`, `master_instance_id`, `repl_mode`（gtid/file） |
+| `mysql_mgr_member` | `cluster_instance_id`, `group_name`, `group_seeds`, `local_address` |
+| `oracle_rac_node` | `cluster_instance_id`, `node_name`, `scan_name`, `grid_home` |
+
+context 参数在表单中通过**选择已有对象**（复制集、主库、集群）带出，减少手填。
+
+### 4.3 Job.params 推荐 JSON 结构
+
+统一结构，便于 Serializer 校验与 Executor 解析：
+
+```json
+{
+  "meta": {
+    "job_type": "mysql_standalone",
+    "version_profile_code": "mysql-5.7.42"
+  },
+  "target": {
+    "host_id": 101
+  },
+  "cmdb": {
+    "instance_name": "prod-order-mysql-01",
+    "environment_id": 1,
+    "business_id": 2,
+    "connect_host": "10.1.2.10",
+    "port": 3306,
+    "db_name": "order_db",
+    "charset": "utf8mb4",
+    "topology": "standalone",
+    "role": "master",
+    "remark": ""
+  },
+  "install": {
+    "basedir": "/usr",
+    "datadir": "/data/mysql",
+    "log_dir": "/data/mysql/logs",
+    "socket": "/data/mysql/mysql.sock"
+  },
+  "config": {
+    "character_set": "utf8mb4",
+    "collation": "utf8mb4_unicode_ci",
+    "innodb_buffer_pool_size": "2G",
+    "max_connections": 500,
+    "extra_cnf_lines": ""
+  },
+  "credentials": {
+    "root_password": "***",
+    "admin_account": {
+      "account_name": "dba",
+      "account_pswd": "***",
+      "grant_host": "%",
+      "account_type": "admin"
+    }
+  },
+  "context": {},
+  "overrides": {}
+}
+```
+
+Oracle 单实例将 `install` / `config` 换为：
+
+```json
+{
+  "install": {
+    "oracle_base": "/u01/app/oracle",
+    "oracle_home": "/u01/app/oracle/product/19c/dbhome_1",
+    "ora_inventory": "/u01/app/oraInventory",
+    "datafile_dest": "/u01/oradata"
+  },
+  "config": {
+    "sid": "ORCL",
+    "service_name": "orcl",
+    "character_set": "AL32UTF8",
+    "national_character_set": "AL16UTF16",
+    "memory_target_mb": 4096,
+    "processes": 300
+  },
+  "credentials": {
+    "sys_password": "***",
+    "system_password": "***"
+  }
+}
+```
+
+### 4.4 参数合并规则（Resolved Params）
+
+执行前在 `services.py` 中生成 `resolved_params`：
+
+```
+resolved = deep_merge(
+    profile.default_params,      # 版本档案默认
+    derive_from_host(host),      # 如 connect_host = 业务 IP
+    job.params.install,          # 用户 install 段
+    job.params.config,
+    job.params.cmdb,             # 端口等可覆盖
+    job.params.overrides         # 显式高级覆盖，优先级最高
+)
+```
+
+**推导规则示例：**
+
+| 条件 | 推导 |
+|------|------|
+| `cmdb.connect_host` 为空 | 取 `target.host` 的第一条业务 IP |
+| `install.datadir` 为空 | 用 Profile 默认 `/data/mysql` |
+| `config.innodb_buffer_pool_size` 为空 | 按主机内存 50% 或 Profile 默认 |
+| `cmdb.port` 与已有实例冲突 | precheck 失败，不进入 running |
+
+合并结果写入 `Job.resolved_params`（JSONField 快照），Ansible 只读该快照，避免执行中 Profile 被改导致不一致。
+
+### 4.5 参数 Schema 与校验（deploy_schemas）
+
+每种 `job_type` + `version_profile_code` 对应一份 **参数 Schema**，用于：
+
+- 后端 Serializer 校验（DRF）
+- 前端动态表单渲染（字段、分组、必填、默认值）
+- precheck 步骤的输入约束
+
+**建议目录：**
+
+```
+apps/dbmgr/deploy_schemas/
+├── base.py                 # 公共字段、merge 逻辑
+├── mysql_standalone.py
+├── oracle_standalone.py
+└── registry.py             # (job_type, profile) → schema
+```
+
+**Schema 字段定义示例（Python 或 JSON Schema）：**
+
+```python
+{
+    "name": "cmdb.port",
+    "type": "integer",
+    "required": True,
+    "default_from": "profile.default_params.cmdb.port",
+    "min": 1024,
+    "max": 65535,
+    "ui_group": "连接信息",
+    "ui_order": 20,
+    "cmdb_field": "port",
+    "precheck": ["port_not_listening", "no_duplicate_instance_endpoint"],
+}
+```
+
+**校验分两层：**
+
+| 层级 | 时机 | 内容 |
+|------|------|------|
+| **静态校验** | 提交 Job 时 | 必填、类型、范围、正则、Profile 是否支持该 job_type |
+| **动态预检查** | precheck 步骤 | 目标机端口占用、磁盘空间、内存、OS 兼容、主从版本一致 |
+
+静态校验在 `serializers.py`；动态预检查在 Executor + Ansible precheck role。**同一规则不要写两遍**，动态项只放在 precheck。
+
+### 4.6 参数 → Ansible → 配置文件
+
+数据流：
+
+```
+表单 → Job.params
+     → merge → Job.resolved_params
+     → Executor 转为 ansible extra-vars（credentials 走 vault 或 env）
+     → Playbook roles 写 my.cnf / systemd / listener.ora / dbca.rsp
+     → verify 探测 → Job.result
+     → register_cmdb → DatabaseInstance / DatabaseAccount
+```
+
+**Ansible extra-vars 建议扁平化关键项**，例如：
+
+```yaml
+mysql_port: "{{ resolved.cmdb.port }}"
+mysql_datadir: "{{ resolved.install.datadir }}"
+mysql_root_password: "{{ vault_root_password }}"
+```
+
+密码类走 Ansible Vault 或 Celery 任务内存传递，**不要**写入 resolved_params 快照的明文副本（快照可存 `credentials_ref: "encrypted:..."`）。
+
+### 4.7 前端表单设计（LayUI）
+
+**分步向导（推荐）：**
+
+| 步骤 | 内容 |
+|------|------|
+| 1. 场景与版本 | job_type、version_profile、目标主机 |
+| 2. 台账信息 | instance_name、环境、业务、connect_host、port |
+| 3. 安装与配置 | datadir、字符集、内存等（Profile 已填默认值） |
+| 4. 账号安全 | root/sys 密码、默认运维账号 |
+| 5. 确认 | 展示 Resolved 摘要（密码打码），提交 |
+
+**交互规则：**
+
+- 选 Profile + 主机后，调用 `GET /deploy/schema/?job_type=...&profile=...` 拉字段定义与默认值。
+- 普通用户只显示 `ui_group` 基础项；「高级选项」展开 `install.*`、`config.extra_cnf_lines`。
+- `connect_host` 默认只读（自动填 IP），允许高级用户改（VIP 场景）。
+- 扩展场景（从库）在步骤 1 增加「选择主库 / 复制集」，自动填充 `context` 段。
+
+### 4.8 MySQL 单实例 — 参数字段清单（MVP）
+
+| 字段 | 分组 | 必填 | 默认来源 | CMDB / 用途 |
+|------|------|------|----------|-------------|
+| version_profile_code | 版本 | 是 | 下拉 | Job.meta |
+| host_id | 目标 | 是 | 用户选 | target |
+| instance_name | 台账 | 是 | 用户填 | CMDB |
+| environment_id / business_id | 台账 | 是 | 用户选 | CMDB |
+| connect_host | 连接 | 是 | 主机 IP | CMDB |
+| port | 连接 | 是 | Profile 3306 | CMDB + 安装 |
+| db_name | 连接 | 否 | — | CMDB |
+| charset | 配置 | 否 | Profile utf8mb4 | CMDB + my.cnf |
+| datadir | 安装 | 是 | Profile | install + my.cnf |
+| log_dir | 安装 | 否 | Profile | my.cnf |
+| innodb_buffer_pool_size | 配置 | 否 | Profile / 内存推导 | my.cnf |
+| max_connections | 配置 | 否 | Profile | my.cnf |
+| root_password | 账号 | 是 | 用户填 / 生成 | 初始化，不落 CMDB |
+| admin_account | 账号 | 建议 | 用户填 | DatabaseAccount |
+
+### 4.9 Oracle 单实例 — 参数字段清单（MVP）
+
+| 字段 | 分组 | 必填 | 默认来源 | CMDB / 用途 |
+|------|------|------|----------|-------------|
+| version_profile_code | 版本 | 是 | 下拉 | Job.meta |
+| host_id | 目标 | 是 | 用户选 | target |
+| instance_name | 台账 | 是 | 用户填 | CMDB |
+| connect_host / port | 连接 | 是 | IP / 1521 | CMDB |
+| sid | Oracle | 是* | 用户填 | CMDB + DBCA |
+| service_name | Oracle | 是* | 用户填 | CMDB + listener |
+| oracle_base / oracle_home | 安装 | 是 | Profile | install |
+| datafile_dest | 安装 | 是 | Profile | DBCA |
+| character_set | 配置 | 是 | AL32UTF8 | DBCA |
+| memory_target_mb | 配置 | 是 | Profile / 硬件 | DBCA + precheck |
+| sys_password / system_password | 账号 | 是 | 用户填 | 初始化 |
+| admin_account | 账号 | 建议 | 用户填 | DatabaseAccount |
+
+\* sid 与 service_name 至少填一项（与现有 `DatabaseInstance` 校验一致）。
+
+### 4.10 参数模板与复用（第二期）
+
+若同一业务反复部署相同规格，可增加：
+
+| 能力 | 说明 |
+|------|------|
+| **DeployParamTemplate** | 保存一份 `cmdb + install + config`（不含密码），如「生产 MySQL 5.7 标准规格」 |
+| **从已有实例克隆** | 新 Job 复制某实例的非敏感参数，仅改 instance_name / host |
+| **环境级默认值** | 如「生产环境默认 charset=utf8mb4、datadir=/data/mysql」 |
+
+第一版不必建表，可在 Profile 的 `default_params` 里写死环境无关的默认值；环境差异用 Template 解决。
+
+### 4.11 常见误区（避免）
+
+| 误区 | 正确做法 |
+|------|----------|
+| 所有参数都塞进 `DatabaseInstance` | 安装路径进 Job.result，CMDB 只保留连接与运维必要字段 |
+| 每个版本一套独立表单 | 同一 job_type 共用 Schema，差异由 Profile 的 default_params 驱动 |
+| 用户粘贴完整 my.cnf | 结构化 config 字段 + 可选 extra_lines |
+| 密码明文写进 step 日志 | 脱敏 + 可选加密存储 |
+| 提交时做端口检测 | 端口检测放 precheck 步骤（需 SSH 到目标机） |
+| params 扁平无结构 | 按 meta/target/cmdb/install/config/credentials/context 分段 |
+
+### 4.12 小结（参数配置）
+
+| 问题 | 建议 |
+|------|------|
+| 参数存在哪？ | Profile 默认 + Job.params + resolved 快照 + result + CMDB 五层 |
+| 怎么扩展？ | 新 job_type 增加 Schema 与 context 段，核心 JSON 结构不变 |
+| 怎么校验？ | 静态 Schema + 动态 precheck 分工 |
+| 怎么驱动安装？ | resolved_params → Ansible extra-vars → 模板生成配置文件 |
+| 与 CMDB 关系？ | cmdb 段字段映射 `DatabaseInstance`；credentials 映射 `DatabaseAccount` |
+| MVP 做什么？ | MySQL / Oracle 单实例各一份 Schema + Profile default_params + 分步表单 |
+
+---
+
+## 五、未来扩展：从库 / MGR 成员 / RAC
+
+### 5.1 与现有模型对齐
 
 `DatabaseInstance` 已具备扩展位：
 
@@ -189,7 +564,7 @@ pending → prechecking → running → verifying → succeeded
 
 部署层应对齐这些字段，而不是另起一套概念。
 
-### 4.2 扩展矩阵
+### 5.2 扩展矩阵
 
 | 场景 | job_type | 前置依赖 | CMDB 写入 |
 |------|----------|----------|-----------|
@@ -199,7 +574,7 @@ pending → prechecking → running → verifying → succeeded
 | MGR 新成员 | `mysql_mgr_member` | 已有 MGR 集群（至少 1 个 seed） | ha_cluster + cluster_style=mgr + 新 deploy_host |
 | Oracle RAC 节点 | `oracle_rac_node` | 已有 RAC 集群 + Grid | ha_cluster + cluster_style=rac + 新 deploy_host |
 
-### 4.3 必须提前考虑的 8 件事
+### 5.3 必须提前考虑的 8 件事
 
 #### ① 参数模型分三层
 
@@ -277,20 +652,23 @@ roles/
 
 ---
 
-## 五、推荐实现路径（分三期）
+## 六、推荐实现路径（分三期）
 
 ### 第一期（MVP）
 
-1. 新建 `DbDeployJob` + `DbDeployJobStep`
-2. 实现 `mysql_standalone`、`oracle_standalone` 两个 Executor
-3. Ansible playbook 各 1 套（先支持最常用的 OS，如 CentOS 7）
-4. LayUI：发起部署 + 任务列表 + 任务详情（步骤日志）
-5. 成功后自动注册 CMDB
+1. 新建 `DbDeployJob` + `DbDeployJobStep`（**任务落库**）
+2. **Version Profile 用 YAML 文件**（`deploy/profiles/`，**第一版不建 `DbDeployVersionProfile` 表**）
+3. 实现 `profile_loader`：按 `version_profile_code` 加载 YAML，合并用户参数生成 `resolved_params`
+4. 实现 `mysql_standalone`、`oracle_standalone` 两个 Executor
+5. Ansible playbook 各 1 套（先支持最常用的 OS，如 CentOS 7）
+6. LayUI：发起部署 + 任务列表 + 任务详情（步骤日志）
+7. 成功后自动注册 CMDB
 
-**不要第一期就做 RAC / MGR**，先把编排框架跑通。
+**不要第一期就做 RAC / MGR**，先把编排框架跑通。Profile 存储策略详见 **§9.3.1**。
 
 ### 第二期
 
+- `DbDeployVersionProfile` **落库** + 后台维护页（从 YAML 迁移或双写过渡）
 - `mysql_replica`：选已有复制集 + 主库，自动 `CHANGE MASTER` / GTID
 - `mysql_mgr_member`：bootstrap / join 两种模式
 - 部署前检查页（端口占用、磁盘、内存、已装实例冲突）
@@ -303,7 +681,7 @@ roles/
 
 ---
 
-## 六、代码分层建议
+## 七、代码分层建议
 
 贴合项目 Django 规范（views 轻薄、业务在 services）：
 
@@ -313,6 +691,7 @@ apps/dbmgr/   # 或 apps/dbdeploy/
 ├── serializers.py         # 各 job_type 参数校验
 ├── views.py               # 薄视图
 ├── services.py            # create_job, cancel_job, register_instance_from_job
+├── profile_loader.py      # 第一版：从 deploy/profiles/*.yml 加载 Version Profile
 ├── deploy_executors/
 │   ├── base.py            # BaseDeployExecutor
 │   ├── mysql_standalone.py
@@ -322,6 +701,7 @@ apps/dbmgr/   # 或 apps/dbdeploy/
 └── deploy_schemas/        # JSON schema / 默认参数
 
 deploy/                    # 项目根目录，不进 Python 包
+├── profiles/                # Version Profile YAML（含 media_base_url / package_filename）
 ├── playbooks/
 │   ├── mysql/standalone/site.yml
 │   └── oracle/standalone/site.yml
@@ -332,36 +712,38 @@ deploy/                    # 项目根目录，不进 Python 包
 
 ---
 
-## 七、待拍板的关键决策
+## 八、待拍板的关键决策
 
 1. **Oracle 第一版做到哪一步？**
    - 轻量：只装软件 + listener + 提示 DBA 手工 DBCA
    - 完整：全自动 DBCA silent（工作量大，但符合「部署平台」定位）
 
 2. **安装介质从哪来？**
-   - 内网 yum / apt 源（推荐，运维可控）
-   - 平台上传 tar / rpm（灵活但占存储）
+   - **MySQL（当前环境）**：`http://10.32.14.211/soft/mysql/tgz/`（见 §9.9.1）
+   - **Oracle（当前环境）**：`http://10.32.14.211/soft/oracle/zip/`，下分 `19c/`、`21c/` 子目录（见 §9.9.2）
+   - 可选：`.env` 中 `DEPLOY_MYSQL_MEDIA_BASE_URL` / `DEPLOY_ORACLE_MEDIA_BASE_URL` 覆盖前缀
 
 3. **第一期支持哪些版本？**
-   - 建议先锁定生产在用的版本（如 MySQL 5.7.42、Oracle 19c），再逐步加 profile
+   - MySQL：`mysql-5.7.44` Profile（tgz）
+   - Oracle：`oracle-19c`、`oracle-21c` Profile（zip，按子目录取介质）
 
 ---
 
-## 八、多版本安装：MySQL / Oracle 版本如何考虑
+## 九、多版本安装：MySQL / Oracle 版本如何考虑
 
 Oracle 和 MySQL 均存在多个大版本、小版本及不同安装方式。若不在设计阶段单独建模，后期每加一个版本就会复制一套 Playbook，维护成本会迅速失控。
 
-### 8.1 先区分三个概念（不要混为一谈）
+### 9.1 先区分三个概念（不要混为一谈）
 
 | 概念 | 含义 | 示例 |
 |------|------|------|
 | **版本档案（Version Profile）** | 用户在下拉框里选的「可部署版本」 | `mysql-5.7.42`、`mysql-8.0.36`、`oracle-19c` |
-| **安装介质（Package / Media）** | 实际用到的 rpm / tar / 内网 repo | `mysql-community-server-5.7.42-1.el7.x86_64.rpm` |
+| **安装介质（Package / Media）** | 实际用到的 tar / zip / 内网 URL | MySQL：`.../tgz/mysql-5.7.44-....tar.gz`；Oracle 19c：`.../zip/19c/LINUX.X64_193000_db_home.zip`；21c：`.../zip/21c/LINUX.X64_213000_db_home.zip` |
 | **部署配方（Recipe / Playbook 变体）** | 该版本对应的安装步骤与默认参数 | 5.7 用 `--initialize-insecure`；8.0 默认 caching_sha2_password |
 
 **DeployJob.params 里只存 `version_profile_id`（或 profile 编码）+ 用户覆盖项**；介质路径、默认路径、兼容 OS 等从 Profile 解析，不要每次让用户手填。
 
-### 8.2 与现有 CMDB 的关系
+### 9.2 与现有 CMDB 的关系
 
 `DatabaseInstance.version`（`CharField(max_length=32)`）继续表示**实例实际运行版本**，由部署 verify 步骤探测后写入，例如：
 
@@ -375,7 +757,7 @@ Oracle 和 MySQL 均存在多个大版本、小版本及不同安装方式。若
 
 两者可能不一致时（如选了 19c profile 实际打了 RU），以 **detected_version 写入 CMDB** 为准。
 
-### 8.3 建议新增：版本档案（Version Profile）
+### 9.3 建议新增：版本档案（Version Profile）
 
 第一期可用 YAML 文件；实例部署多了再落库 `DbDeployVersionProfile`。
 
@@ -391,8 +773,13 @@ minor_version       # 42 / 36 / 可选
 status              # enabled / deprecated / disabled
 supported_os        # JSON: ["centos7", "rocky8"]
 supported_job_types # JSON: ["mysql_standalone", "mysql_replica"]
-install_method      # yum / rpm / tar / oracle_runinstaller
-package_ref         # 介质标识或内网 repo 名
+install_method      # yum / rpm / tar / tar_http / zip_http / oracle_runinstaller
+package_ref         # 介质标识（逻辑名）
+media_base_url      # HTTP 目录前缀（内网软件库根路径）
+media_subdir        # 可选：Oracle 版本子目录，如 19c / 21c
+package_filename    # tar.gz / zip 文件名（以软件库实际文件名为准）
+package_url         # 完整 URL（由 base_url + subdir + filename 拼接）
+package_checksum    # 可选：sha256
 default_params      # JSON: datadir、字符集、oracle_home 模板等
 playbook_variant    # install_5_7 / install_8_0 / install_19c
 min_memory_gb       # 预检查用
@@ -404,14 +791,86 @@ remark
 ```
 deploy/profiles/
 ├── mysql/
-│   ├── 5.7.42.yml
+│   ├── 5.7.44.yml          # 对应当前内网 tgz 介质
 │   └── 8.0.36.yml
 └── oracle/
     ├── 19c.yml
     └── 21c.yml
 ```
 
-### 8.4 MySQL 多版本差异要点
+#### 9.3.1 第一版存储策略：Profile 存文件还是存表？
+
+**结论（MVP）：Version Profile 放在 YAML 文件；部署任务放在数据库表。** 二者职责分离，不要第一版就为 Profile 建表、做 CRUD 页面。
+
+**分工一览：**
+
+| 内容 | 第一版存放 | 第二版及以后 |
+|------|------------|--------------|
+| Version Profile（版本、介质 URL、`default_params`、playbook 变体） | `deploy/profiles/**/*.yml` | 可迁移至 `DbDeployVersionProfile` 表 + 管理页 |
+| 部署任务 `DbDeployJob` | 数据库表 | 不变 |
+| 任务步骤 `DbDeployJobStep` | 数据库表 | 不变 |
+| Job 对 Profile 的引用 | `params.meta.version_profile_code`（字符串） | 可改为 FK `version_profile_id` |
+| 执行用合并参数 | `resolved_params`（JSONField 快照，建议有） | 不变 |
+
+**第一版 Job 表记什么（不把 Profile 全文塞进 Job）：**
+
+```json
+{
+  "meta": {
+    "job_type": "mysql_standalone",
+    "version_profile_code": "mysql-5.7.44"
+  },
+  "target": { "host_id": 101 },
+  "cmdb": { "instance_name": "...", "port": 3306 },
+  "install": { "datadir": "/data/mysql" },
+  "credentials": { "root_password": "***" }
+}
+```
+
+执行前由 `profile_loader` 读取 `deploy/profiles/mysql/5.7.44.yml`，与 `Job.params`、主机推导值合并，写入 `resolved_params`（含 `media.download_url` 等）。Ansible **只读 `resolved_params`**，避免执行中 YAML 被改导致不一致。
+
+**第一版用文件、不用表的原因：**
+
+1. Profile 数量少（当前约 3 个：MySQL 5.7.44、Oracle 19c/21c），变更走 Git 评审即可。
+2. Profile 与 `deploy/playbooks/`、`deploy/roles/` 同仓，发布版本一致。
+3. 减少 MVP 范围：无需 Profile 管理页、迁移、权限与在线编辑。
+4. 任务侧仍必须落库，便于审计、重试、步骤日志。
+
+**代码侧最小实现：**
+
+```
+apps/dbmgr/
+├── profile_loader.py       # load_profile(code) → dict；list_profiles(engine?)
+├── deploy_tasks.py
+└── ...
+
+deploy/profiles/            # 与代码同仓，不进 Python 包
+├── mysql/5.7.44.yml
+└── oracle/19c.yml, 21c.yml
+```
+
+`GET /deploy/profiles/api/`（或合入部署 API）返回可选 Profile 列表，供 LayUI 下拉框使用；字段来自 YAML 的 `profile_code`、`display_name`、`engine`、`supported_job_types`。
+
+**环境变量覆盖（可选，减少改 YAML 频率）：**
+
+```bash
+# .env
+DEPLOY_MYSQL_MEDIA_BASE_URL=http://10.32.14.211/soft/mysql/tgz/
+DEPLOY_ORACLE_MEDIA_BASE_URL=http://10.32.14.211/soft/oracle/zip/
+```
+
+`profile_loader` 合并 YAML 中的 `media_base_url` 时，若环境变量存在则覆盖前缀；`package_filename`、`media_subdir` 仍以 YAML 为准。
+
+**何时改为存表（第二期触发条件）：**
+
+- DBA 需在页面上改介质地址、默认参数，而不想发版改 YAML
+- Profile 数量增多（如 >10）或多人并行维护易冲突
+- 需要 `enabled` / `deprecated` 在线切换与变更审计
+- 需要按环境（生产/测试）配置不同 Profile 默认值
+
+落库时，`DbDeployVersionProfile` 字段与 §9.3 及 YAML 结构 **一一对应**，便于脚本从 YAML 批量导入；`Job.params.meta.version_profile_code` 可逐步改为 `version_profile_id` FK。
+
+### 9.4 MySQL 多版本差异要点
 
 | 维度 | 5.7.x | 8.0.x |
 |------|-------|-------|
@@ -427,9 +886,9 @@ deploy/profiles/
 1. **大版本分 Playbook 变体**（`install_5_7` / `install_8_0`），小版本（5.7.41 vs 5.7.42）通常只改 `package_ref`。
 2. **加从库时**：主从 `major_version` 必须一致或落在兼容矩阵内（5.7→5.7，8.0→8.0；跨大版本只做升级项目，不做部署向导默认路径）。
 3. **加 MGR 成员**：Profile 必须 `major_version=8.0` 且 `supported_job_types` 含 `mysql_mgr_member`。
-4. 项目当前生产为 **MySQL 5.7.42**（见 `CLAUDE.md`），MVP 优先支持该 profile。
+4. 项目当前生产数据库版本为 **MySQL 5.7.42**（见 `CLAUDE.md`）；内网安装介质已为 **5.7.44 tgz**（见 §9.9.1），Profile 以介质为准，部署完成后 CMDB `version` 写探测值（如 `5.7.44`）。
 
-### 8.5 Oracle 多版本差异要点
+### 9.5 Oracle 多版本差异要点
 
 | 维度 | 说明 |
 |------|------|
@@ -446,7 +905,7 @@ deploy/profiles/
 3. 第一期若只做「软件 + listener + 手工 DBCA」，Profile 仍要预留 `dbca_response_template` 字段，便于第二期 silent 安装。
 4. 台账 `DatabaseInstance.version` 建议存 **探测到的完整版本号**；展示层可再映射为 `19c`。
 
-### 8.6 版本兼容矩阵（预检查 + 扩展场景）
+### 9.6 版本兼容矩阵（预检查 + 扩展场景）
 
 在 `services.py` 部署校验层维护（或 Profile 配置）：
 
@@ -460,14 +919,14 @@ deploy/profiles/
 
 预检查失败应 **在 Job 进入 running 前拒绝**，并返回可读原因（如「目标主机 Rocky 8 不支持 oracle-19c profile」）。
 
-### 8.7 前端交互建议
+### 9.7 前端交互建议
 
 1. 用户先选 **数据库类型** → 再选 **版本档案**（下拉仅显示 `status=enabled` 且与目标主机 OS 兼容的项）。
 2. 选中 Profile 后 **自动填充** datadir、端口、字符集、oracle_home 等默认值，用户可改。
 3. Profile 标记 `deprecated` 的仍可见但提示「建议新版本」，禁止新生产部署可选 `disabled`。
 4. 部署任务详情页展示：`profile_code` + 安装完成后 `detected_version`。
 
-### 8.8 Playbook / 目录组织（按版本变体）
+### 9.8 Playbook / 目录组织（按版本变体）
 
 ```
 deploy/
@@ -500,27 +959,255 @@ deploy/
 
 **共用 role**（precheck、start_service、register_cmdb）与 **版本专属 role**（install、initialize）分离，避免复制。
 
-### 8.9 介质管理（与版本档案配合）
+### 9.9 介质管理（与版本档案配合）
 
 | 方式 | 适用 | 注意 |
 |------|------|------|
-| 内网 yum / apt 源 | MySQL 5.7/8.0、部分 Oracle | Profile 只存 repo 名 + 包名模式 |
-| 共享 NFS 目录 | Oracle tar/runInstaller | Profile 存 `media_path` |
+| **内网 HTTP 软件库** | MySQL tar.gz、Oracle zip（**当前环境**） | Profile 存 `media_base_url` + 子目录 + `package_filename`；见 §9.9.1 / §9.9.2 |
+| 内网 yum / apt 源 | MySQL rpm 等 | Profile 只存 repo 名 + 包名模式 |
+| 共享 NFS 目录 | 备用 Oracle 介质 | Profile 存 `media_path` |
 | 平台上传 | 非常规版本 | 后期 `DbDeployPackage` 表：checksum、上传人、过期策略 |
 
-同一 Profile 只指向 **一种主安装方式**；换方式则新建 Profile（如 `mysql-5.7.42-yum` vs `mysql-5.7.42-rpm`）。
+同一 Profile 只指向 **一种主安装方式**；换方式则新建 Profile（如 `mysql-5.7.44-tgz` vs `mysql-5.7.44-yum`）。
 
-### 8.10 分阶段落地建议
+#### 9.9.1 内网 MySQL 安装包（当前环境）
+
+运维内网已提供 **HTTP 目录**存放 MySQL 二进制 tar.gz，部署平台通过 Version Profile 引用，**不要求用户在部署表单里填写下载地址**。
+
+| 项 | 值 |
+|----|-----|
+| 介质类型 | tar.gz 二进制包（非 yum rpm） |
+| 目录前缀 | `http://10.32.14.211/soft/mysql/tgz/` |
+| 当前可用包示例 | `mysql-5.7.44-linux-glibc2.12-x86_64.tar.gz` |
+| 完整 URL 示例 | `http://10.32.14.211/soft/mysql/tgz/mysql-5.7.44-linux-glibc2.12-x86_64.tar.gz` |
+
+**Profile 配置示例**（`deploy/profiles/mysql/5.7.44.yml`）：
+
+```yaml
+engine: mysql
+profile_code: mysql-5.7.44
+display_name: MySQL 5.7.44（glibc2.12 tgz）
+major_version: "5.7"
+minor_version: "44"
+status: enabled
+supported_os:
+  - centos7
+supported_job_types:
+  - mysql_standalone
+  - mysql_replica
+install_method: tar_http
+package_ref: mysql-5.7.44-linux-glibc2.12-x86_64
+media_base_url: "http://10.32.14.211/soft/mysql/tgz/"
+package_filename: "mysql-5.7.44-linux-glibc2.12-x86_64.tar.gz"
+# package_url 可由代码拼接：media_base_url + package_filename
+playbook_variant: install_5_7_tgz
+default_params:
+  cmdb:
+    port: 3306
+    charset: utf8mb4
+  install:
+    basedir: "/usr/local/mysql"
+    datadir: "/data/mysql"
+    log_dir: "/data/mysql/logs"
+  config:
+    character_set: utf8mb4
+    collation: utf8mb4_unicode_ci
+    default_authentication_plugin: mysql_native_password
+min_memory_gb: 2
+remark: "介质来自内网 HTTP 软件库 10.32.14.211"
+```
+
+**与 Job.params 的关系：**
+
+- 用户在表单里**只选** Profile `mysql-5.7.44`，不填 URL。
+- `resolved_params.media` 由 Profile 注入，例如：
+
+```json
+{
+  "media": {
+    "install_method": "tar_http",
+    "base_url": "http://10.32.14.211/soft/mysql/tgz/",
+    "filename": "mysql-5.7.44-linux-glibc2.12-x86_64.tar.gz",
+    "download_url": "http://10.32.14.211/soft/mysql/tgz/mysql-5.7.44-linux-glibc2.12-x86_64.tar.gz"
+  }
+}
+```
+
+**Ansible install 步骤（概要）：**
+
+1. precheck：目标机可访问 `10.32.14.211:80`（或控制节点 wget 后 scp，按网络策略二选一）。
+2. `get_url` / `wget` 下载 tar.gz 到目标机 `/tmp` 或 staging 目录。
+3. 解压到 `install.basedir`（如 `/usr/local/mysql`）。
+4. 创建 mysql 用户、目录权限、初始化 datadir、配置 systemd / my.cnf。
+
+**配置与安全建议：**
+
+| 项 | 建议 |
+|----|------|
+| URL 写死还是可配置 | Profile 写默认值；`settings` / `.env` 可提供 `DEPLOY_MYSQL_MEDIA_BASE_URL` 覆盖前缀，便于换 IP 而不改 Profile |
+| 多版本多文件 | 目录下每增加一个 tgz，新增一条 Profile（改 `package_filename` + `minor_version`） |
+| 校验 | precheck 对 URL 做 HEAD/大小检查；可选 `package_checksum` |
+| 日志 | 任务详情展示 `download_url`，不含密码 |
+| glibc 要求 | 包名含 `glibc2.12`，precheck 需确认目标 OS glibc ≥ 2.12 |
+
+**说明：** 台账字段 `DatabaseInstance.version` 存部署后探测结果（如 `5.7.44-log`），与 Profile 的 `profile_code`（选型）可并存；历史实例若为 5.7.42，不影响新装选用 5.7.44 介质。
+
+#### 9.9.2 内网 Oracle 安装包（当前环境）
+
+运维内网 **HTTP 软件库**存放 Oracle 安装 zip，按大版本分子目录；部署平台通过 Version Profile 引用，**不要求用户填写下载地址**。
+
+| 项 | 值 |
+|----|-----|
+| 介质类型 | zip 安装包（runInstaller 用） |
+| 根目录前缀 | `http://10.32.14.211/soft/oracle/zip/` |
+| 版本子目录 | `19c/`、`21c/`（其下为对应版本安装 zip） |
+| 19c 介质 URL | `http://10.32.14.211/soft/oracle/zip/19c/LINUX.X64_193000_db_home.zip` |
+| 21c 介质 URL | `http://10.32.14.211/soft/oracle/zip/21c/LINUX.X64_213000_db_home.zip` |
+| 19c 安装包 | `LINUX.X64_193000_db_home.zip` |
+| 21c 安装包 | `LINUX.X64_213000_db_home.zip` |
+
+Profile 中通过 `package_filename` 维护；新增/更换包时只改 Profile，不改部署表单。
+
+**目录结构（逻辑）：**
+
+```
+http://10.32.14.211/soft/oracle/zip/
+├── 19c/
+│   └── LINUX.X64_193000_db_home.zip
+└── 21c/
+    └── LINUX.X64_213000_db_home.zip
+```
+
+**Profile 配置示例 — Oracle 19c**（`deploy/profiles/oracle/19c.yml`）：
+
+```yaml
+engine: oracle
+profile_code: oracle-19c
+display_name: Oracle Database 19c
+major_version: "19"
+status: enabled
+supported_os:
+  - centos7
+supported_job_types:
+  - oracle_standalone
+  - oracle_rac_node
+install_method: zip_http
+package_ref: oracle-19c-db-home
+media_base_url: "http://10.32.14.211/soft/oracle/zip/"
+media_subdir: "19c"
+package_filename: "LINUX.X64_193000_db_home.zip"
+# download_url: http://10.32.14.211/soft/oracle/zip/19c/LINUX.X64_193000_db_home.zip
+playbook_variant: install_19c_zip
+default_params:
+  cmdb:
+    port: 1521
+  install:
+    oracle_base: "/u01/app/oracle"
+    oracle_home: "/u01/app/oracle/product/19c/dbhome_1"
+    ora_inventory: "/u01/app/oraInventory"
+    datafile_dest: "/u01/oradata"
+  config:
+    character_set: AL32UTF8
+    national_character_set: AL16UTF16
+    memory_target_mb: 4096
+    processes: 300
+min_memory_gb: 8
+remark: "介质来自内网 HTTP 软件库 10.32.14.211/oracle/zip/19c"
+```
+
+**Profile 配置示例 — Oracle 21c**（`deploy/profiles/oracle/21c.yml`）：
+
+```yaml
+engine: oracle
+profile_code: oracle-21c
+display_name: Oracle Database 21c
+major_version: "21"
+status: enabled
+supported_os:
+  - centos7
+supported_job_types:
+  - oracle_standalone
+  - oracle_rac_node
+install_method: zip_http
+package_ref: oracle-21c-db-home
+media_base_url: "http://10.32.14.211/soft/oracle/zip/"
+media_subdir: "21c"
+package_filename: "LINUX.X64_213000_db_home.zip"
+# download_url: http://10.32.14.211/soft/oracle/zip/21c/LINUX.X64_213000_db_home.zip
+playbook_variant: install_21c_zip
+default_params:
+  cmdb:
+    port: 1521
+  install:
+    oracle_base: "/u01/app/oracle"
+    oracle_home: "/u01/app/oracle/product/21c/dbhome_1"
+    ora_inventory: "/u01/app/oraInventory"
+    datafile_dest: "/u01/oradata"
+  config:
+    character_set: AL32UTF8
+    national_character_set: AL16UTF16
+    memory_target_mb: 4096
+    processes: 300
+min_memory_gb: 8
+remark: "介质来自内网 HTTP 软件库 10.32.14.211/oracle/zip/21c"
+```
+
+**与 Job.params 的关系：**
+
+- 用户表单只选 `oracle-19c` 或 `oracle-21c`，不填 URL。
+- `resolved_params.media` 示例（19c）：
+
+```json
+{
+  "media": {
+    "install_method": "zip_http",
+    "base_url": "http://10.32.14.211/soft/oracle/zip/",
+    "subdir": "19c",
+    "filename": "LINUX.X64_193000_db_home.zip",
+    "download_url": "http://10.32.14.211/soft/oracle/zip/19c/LINUX.X64_193000_db_home.zip"
+  }
+}
+```
+
+**URL 拼接规则（代码层）：**
+
+```
+download_url = media_base_url.rstrip("/") + "/" + media_subdir + "/" + package_filename
+```
+
+MySQL 无 `media_subdir`，为：
+
+```
+download_url = media_base_url.rstrip("/") + "/" + package_filename
+```
+
+**Ansible install 步骤（概要）：**
+
+1. precheck：目标机或控制节点可访问 `10.32.14.211`；OS 在 Profile `supported_os` 内；内存 ≥ `min_memory_gb`。
+2. 下载 zip 到 staging 目录（如 `/tmp/oracle_media/`）。
+3. 解压后执行 `runInstaller -silent -responseFile ...`（或先仅装软件，DBCA 另步，见 §8 待拍板）。
+4. 配置 listener、环境变量、`/etc/oratab`；verify 后 register_cmdb。
+
+**配置建议：**
+
+| 项 | 建议 |
+|----|------|
+| 环境变量覆盖 | `.env`：`DEPLOY_ORACLE_MEDIA_BASE_URL=http://10.32.14.211/soft/oracle/zip/` |
+| 19c / 21c 区分 | 各一条 Profile，`media_subdir` 分别为 `19c`、`21c` |
+| RAC | Grid 介质若也在软件库，可另建 `oracle-19c-grid` Profile，指向不同 subdir/文件名 |
+| 探测写 CMDB | `DatabaseInstance.version` 写 `v$instance` 探测值，可与 profile_code 并存 |
+
+### 9.10 分阶段落地建议
 
 | 阶段 | 版本能力 |
 |------|----------|
-| **第一期 MVP** | 2～3 个 YAML Profile（如 MySQL 5.7.42、Oracle 19c）；代码内解析；不做版本管理页 |
+| **第一期 MVP** | MySQL `5.7.44` tgz + Oracle `19c`/`21c` zip Profile；介质 URL 来自 10.32.14.211 |
 | **第二期** | `DbDeployVersionProfile` 表 + 后台维护；主从 / MGR 版本校验 |
 | **第三期** | 介质库、deprecated 策略、RU 升级 playbook（与「新装」分离） |
 
 **不要第一期就支持「任意版本」**；每增加一个 Profile，需配套：precheck 规则、install role、verify 命令、（可选）CMDB 默认值模板，并在一台测试机跑通。
 
-### 8.11 小结（多版本）
+### 9.11 小结（多版本）
 
 | 问题 | 建议 |
 |------|------|
@@ -533,16 +1220,18 @@ deploy/
 
 ---
 
-## 九、小结
+## 十、小结
 
 | 问题 | 建议 |
 |------|------|
 | 怎么设计？ | **DeployJob（任务）+ Executor（场景）+ Ansible Role（执行）+ CMDB（结果）** 四层分离 |
 | 单实例怎么实现？ | 9 步标准流程，成功后写 `DatabaseInstance` + `DatabaseInstanceHost` + `DatabaseAccount` |
+| 参数怎么配？ | **Profile 默认 + Job.params 分段 + resolved 快照 + Schema 校验**；见第四章 |
 | 怎么扩展？ | 新 job_type + 新 Executor + 组合已有 Ansible role；params 里带 context / cluster 关联已有对象 |
 | 现有代码怎么用？ | 复用 Host 台账、Ansible 执行、Celery；**不要**复用 BatchTask 当部署引擎 |
 | 模型要改吗？ | CMDB **基本不用改**；新增 DeployJob 相关表即可 |
-| 多版本怎么管？ | **Version Profile** 统一档案；大版本分 Playbook 变体，小版本改介质即可 |
+| 多版本怎么管？ | **Version Profile** 统一档案；介质 URL 写在 Profile，用户不手填 |
+| Profile 第一版存哪？ | **YAML 文件**（`deploy/profiles/`）；任务存表；第二期再 `DbDeployVersionProfile` 落库（§9.3.1） |
 
 ---
 
@@ -551,10 +1240,12 @@ deploy/
 | 路径 | 说明 |
 |------|------|
 | `apps/dbmgr/models.py` | 实例、部署节点、复制集、账号模型 |
+| `deploy/profiles/` | （规划）Version Profile YAML，第一版介质与默认参数 |
+| `apps/dbmgr/profile_loader.py` | （规划）加载 Profile、合并 resolved_params |
 | `apps/dbmgr/probe_services.py` | 实例 / 节点探测 |
 | `apps/common/tasks.py` | Ansible 批量执行（`_build_inventory`、Celery） |
 | `apps/common/models.py` | Host、BatchTask 等 |
 
 ---
 
-*文档版本：v1.1 · 补充多版本安装设计 · 与项目 dbatoolbox Django 5.2 + LayUI + Celery + Ansible 技术栈对齐*
+*文档版本：v1.6 · 补充第一版 Profile 文件存储 vs 任务落表策略（§9.3.1）· 与项目 dbatoolbox Django 5.2 + LayUI + Celery + Ansible 技术栈对齐*
