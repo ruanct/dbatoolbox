@@ -1,0 +1,34 @@
+engine: mysql
+profile_code: mysql-5.7.44
+display_name: MySQL 5.7.44（glibc2.12 tgz）
+major_version: "5.7"
+minor_version: "44"
+status: enabled
+supported_os:
+  - centos7
+supported_job_types:
+  - mysql_standalone
+install_method: tar_http
+package_ref: mysql-5.7.44-linux-glibc2.12-x86_64
+media_base_url: "http://10.32.14.211/soft/mysql/tgz/"
+package_filename: "mysql-5.7.44-linux-glibc2.12-x86_64.tar.gz"
+playbook_variant: install_5_7_tgz
+min_memory_gb: 2
+default_params:
+  cmdb:
+    port: 3306
+    charset: utf8mb4
+    topology: standalone
+    role: master
+  install:
+    basedir: "/usr/local/mysql"
+  config:
+    enable_binlog: true
+    enable_gtid: true
+    binlog_format: ROW
+    character_set: utf8mb4
+    collation: utf8mb4_unicode_ci
+    innodb_buffer_pool_size: "1G"
+    max_connections: 500
+    default_authentication_plugin: mysql_native_password
+remark: "介质来自内网 HTTP 软件库"

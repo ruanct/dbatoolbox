@@ -1,0 +1,236 @@
+{% extends "base.html" %}
+{% block title %}部署任务详情 - DBAToolbox{% endblock %}
+
+{% block content %}
+<div class="breadcrumb">
+    数据库管理 / <a href="/db-deploy/">实例部署</a> / 任务 #{{ job_id }}
+</div>
+
+<style>
+#step-table {
+    table-layout: fixed;
+    width: 100%;
+}
+#step-table col.col-step-no { width: 50px; }
+#step-table col.col-step-name { width: 120px; }
+#step-table col.col-step-status { width: 90px; }
+#step-table col.col-step-start { width: 150px; }
+#step-table col.col-step-end { width: 150px; }
+#step-table th,
+#step-table td {
+    overflow: hidden;
+}
+#step-table td.step-name-cell,
+#step-table td.step-status-cell,
+#step-table td.step-time-cell {
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+#step-table td.step-output-cell {
+    overflow: auto;
+    word-break: break-all;
+    white-space: normal;
+}
+</style>
+
+<div class="layui-card">
+    <div class="layui-card-header">
+        <span>部署任务详情</span>
+        <button class="layui-btn layui-btn-xs layui-btn-primary" style="float:right;margin-top:8px;" id="btn-back">返回列表</button>
+        <button class="layui-btn layui-btn-xs layui-btn-danger" style="float:right;margin-top:8px;margin-right:8px;display:none;" id="btn-delete">删除</button>
+        <button class="layui-btn layui-btn-xs layui-btn-warm" style="float:right;margin-top:8px;margin-right:8px;display:none;" id="btn-cancel">取消</button>
+        <button class="layui-btn layui-btn-xs layui-btn-normal" style="float:right;margin-top:8px;margin-right:8px;display:none;" id="btn-retry">重新执行</button>
+        <button class="layui-btn layui-btn-xs" style="float:right;margin-top:8px;margin-right:8px;" id="btn-refresh">刷新</button>
+    </div>
+    <div class="layui-card-body">
+        <table class="layui-table" lay-size="sm" id="job-info">
+            <tbody></tbody>
+        </table>
+        <fieldset class="layui-elem-field layui-field-title" style="margin-top:16px;">
+            <legend>执行步骤</legend>
+        </fieldset>
+        <table class="layui-table" lay-size="sm" id="step-table">
+            <colgroup>
+                <col class="col-step-no">
+                <col class="col-step-name">
+                <col class="col-step-status">
+                <col class="col-step-start">
+                <col class="col-step-end">
+                <col>
+            </colgroup>
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>步骤</th>
+                    <th>状态</th>
+                    <th>开始</th>
+                    <th>结束</th>
+                    <th>输出</th>
+                </tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_script %}
+<script>
+var jobId = {{ job_id }};
+var pollTimer = null;
+var currentStatus = '';
+
+function getCookie(name) {
+    var r = document.cookie.match("\\b" + name + "=([^;]*)\\b");
+    return r ? r[1] : '';
+}
+
+function postJobAction(action, confirmText, onSuccess) {
+    layer.confirm(confirmText, {icon: 3, title: '确认'}, function(index) {
+        layer.close(index);
+        $.ajax({
+            url: '/db-deploy/api/' + jobId + '/',
+            type: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify({action: action}),
+            headers: {'X-CSRFToken': getCookie('csrftoken_dbatoolbox')},
+            success: function(r) {
+                if (r.code === 0) {
+                    layer.msg(r.msg, {icon: 1});
+                    if (onSuccess) onSuccess();
+                    loadDetail();
+                } else {
+                    layer.msg(r.msg || '操作失败', {icon: 2});
+                }
+            },
+            error: function(xhr) {
+                layer.msg((xhr.responseJSON || {}).msg || '请求失败', {icon: 2});
+            }
+        });
+    });
+}
+
+function updateActionButtons(status) {
+    currentStatus = status;
+    $('#btn-retry').toggle(status === 'pending' || status === 'failed' || status === 'cancelled');
+    $('#btn-cancel').toggle(status === 'pending');
+    $('#btn-delete').toggle(
+        status === 'pending' || status === 'failed' || status === 'cancelled'
+    );
+}
+
+function statusColor(status) {
+    if (status === 'succeeded') return '#5fb878';
+    if (status === 'failed') return '#ff5722';
+    if (status === 'running' || status === 'prechecking' || status === 'verifying') return '#1e9fff';
+    return '#999';
+}
+
+function renderJob(data) {
+    var rows = [
+        ['任务ID', data.id],
+        ['部署类型', data.job_type__display],
+        ['版本档案', data.version_profile_code],
+        ['目标主机', data.target_host__display],
+        ['环境/业务', data.environment__display + ' / ' + data.business__display],
+        ['任务状态', '<span style="color:' + statusColor(data.status) + ';">' + data.status__display + '</span>'],
+        ['注册实例', data.instance_id ? ('<a href="/db-instance/">' + data.instance__display + '</a>') : '-'],
+        ['错误信息', data.error_message || '-'],
+        ['开始/结束', (data.started_at || '-') + ' ~ ' + (data.finished_at || '-')],
+        ['探测版本', (data.result && data.result.detected_version) ? data.result.detected_version : '-']
+    ];
+    if (data.job_type === 'mysql_standalone' && data.resolved_params && data.resolved_params.install) {
+        var ins = data.resolved_params.install;
+        var cfg = data.resolved_params.config || {};
+        var port = (data.resolved_params.cmdb && data.resolved_params.cmdb.port) ? data.resolved_params.cmdb.port : '-';
+        rows.push(['监听端口', port]);
+        rows.push(['程序目录', ins.basedir || '-']);
+        rows.push(['参数文件', ins.cnf_path || '-']);
+        rows.push(['数据目录', ins.datadir || '-']);
+        rows.push(['Socket', ins.socket || '-']);
+        rows.push(['错误日志', ins.log_error || '-']);
+        rows.push(['Binlog', cfg.enable_binlog ? ('开启 (' + (ins.log_bin || '-') + ')') : '关闭']);
+        rows.push(['GTID', cfg.enable_gtid ? '开启' : '关闭']);
+        if (cfg.enable_binlog) {
+            rows.push(['server_id', cfg.server_id || '-']);
+            rows.push(['binlog_format', cfg.binlog_format || 'ROW']);
+        }
+        rows.push(['系统服务', (ins.service_name || '-') + '.service']);
+    }
+    var html = '';
+    for (var i = 0; i < rows.length; i++) {
+        html += '<tr><td width="120">' + rows[i][0] + '</td><td>' + rows[i][1] + '</td></tr>';
+    }
+    $('#job-info tbody').html(html);
+
+    var stepHtml = '';
+    var steps = data.steps || [];
+    for (var j = 0; j < steps.length; j++) {
+        var s = steps[j];
+        var out = (s.output || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        stepHtml += '<tr>'
+            + '<td>' + s.sort_order + '</td>'
+            + '<td class="step-name-cell" title="' + (s.step_name || '').replace(/"/g, '&quot;') + '">' + s.step_name + '</td>'
+            + '<td class="step-status-cell" style="color:' + statusColor(s.status) + ';">' + s.status__display + '</td>'
+            + '<td class="step-time-cell">' + (s.started_at || '-') + '</td>'
+            + '<td class="step-time-cell">' + (s.finished_at || '-') + '</td>'
+            + '<td class="step-output-cell"><pre style="margin:0;white-space:pre-wrap;max-height:120px;overflow:auto;font-size:12px;">' + out + '</pre></td>'
+            + '</tr>';
+    }
+    $('#step-table tbody').html(stepHtml);
+    updateActionButtons(data.status);
+
+    var running = ['pending', 'prechecking', 'running', 'verifying'].indexOf(data.status) >= 0;
+    if (running && !pollTimer) {
+        pollTimer = setInterval(loadDetail, 3000);
+    }
+    if (!running && pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+    }
+}
+
+function loadDetail() {
+    $.getJSON('/db-deploy/api/' + jobId + '/', function(res) {
+        if (res.code === 0) {
+            renderJob(res.data);
+        }
+    });
+}
+
+$('#btn-refresh').on('click', loadDetail);
+$('#btn-back').on('click', function() { window.location.href = '/db-deploy/'; });
+$('#btn-retry').on('click', function() {
+    postJobAction('retry', '确定重新执行该部署任务吗？');
+});
+$('#btn-cancel').on('click', function() {
+    postJobAction('cancel', '确定取消该待执行任务吗？');
+});
+$('#btn-delete').on('click', function() {
+    layer.confirm('确定删除该部署任务吗？删除后不可恢复。', {icon: 3, title: '确认'}, function(index) {
+        layer.close(index);
+        $.ajax({
+            url: '/db-deploy/api/' + jobId + '/',
+            type: 'DELETE',
+            headers: {'X-CSRFToken': getCookie('csrftoken_dbatoolbox')},
+            success: function(r) {
+                if (r.code === 0) {
+                    layer.msg(r.msg, {icon: 1}, function() {
+                        window.location.href = '/db-deploy/';
+                    });
+                } else {
+                    layer.msg(r.msg || '删除失败', {icon: 2});
+                }
+            },
+            error: function(xhr) {
+                layer.msg((xhr.responseJSON || {}).msg || '请求失败', {icon: 2});
+            }
+        });
+    });
+});
+
+$(function() {
+    loadDetail();
+});
+</script>
+{% endblock %}

@@ -308,3 +308,99 @@ class DatabaseAccount(models.Model):
         if self.instance.engine == "mysql" and self.grant_host:
             return f"{self.account_name}@{self.grant_host}"
         return self.account_name
+
+
+class DbDeployJob(models.Model):
+    """数据库实例部署任务"""
+
+    JOB_TYPE_CHOICES = [
+        ("mysql_standalone", "MySQL 单实例"),
+        ("oracle_standalone", "Oracle 单实例"),
+    ]
+    STATUS_CHOICES = [
+        ("pending", "待执行"),
+        ("prechecking", "预检查中"),
+        ("running", "执行中"),
+        ("verifying", "验证中"),
+        ("succeeded", "成功"),
+        ("failed", "失败"),
+        ("cancelled", "已取消"),
+    ]
+
+    job_type = models.CharField(max_length=32, choices=JOB_TYPE_CHOICES, verbose_name="部署类型")
+    status = models.CharField(
+        max_length=16, choices=STATUS_CHOICES, default="pending", verbose_name="任务状态",
+    )
+    target_host = models.ForeignKey(
+        "common.Host", on_delete=models.PROTECT, related_name="db_deploy_jobs", verbose_name="目标主机",
+    )
+    environment = models.ForeignKey(
+        "common.Environment", on_delete=models.PROTECT, verbose_name="所属环境",
+    )
+    business = models.ForeignKey(
+        "common.Business", on_delete=models.PROTECT, verbose_name="所属业务",
+    )
+    params = models.JSONField(default=dict, verbose_name="用户参数")
+    resolved_params = models.JSONField(default=dict, blank=True, verbose_name="合并参数快照")
+    result = models.JSONField(default=dict, blank=True, verbose_name="执行结果")
+    instance = models.ForeignKey(
+        DatabaseInstance,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="deploy_jobs",
+        verbose_name="注册实例",
+    )
+    creator = models.CharField(max_length=50, blank=True, default="", verbose_name="创建人")
+    remark = models.TextField(blank=True, default="", verbose_name="备注")
+    error_message = models.CharField(max_length=512, blank=True, default="", verbose_name="错误信息")
+    started_at = models.DateTimeField(null=True, blank=True, verbose_name="开始时间")
+    finished_at = models.DateTimeField(null=True, blank=True, verbose_name="结束时间")
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
+    updated_at = models.DateTimeField(auto_now=True, verbose_name="更新时间")
+
+    class Meta:
+        db_table = "dbmgr_deploy_job"
+        verbose_name = "数据库部署任务"
+        verbose_name_plural = verbose_name
+        ordering = ["-id"]
+
+    def __str__(self) -> str:
+        return f"部署任务 #{self.id} ({self.get_job_type_display()})"
+
+
+class DbDeployJobStep(models.Model):
+    """数据库部署任务步骤"""
+
+    STEP_STATUS_CHOICES = [
+        ("pending", "待执行"),
+        ("running", "执行中"),
+        ("succeeded", "成功"),
+        ("failed", "失败"),
+        ("skipped", "已跳过"),
+    ]
+
+    job = models.ForeignKey(
+        DbDeployJob, on_delete=models.CASCADE, related_name="steps", verbose_name="部署任务",
+    )
+    step_code = models.CharField(max_length=32, verbose_name="步骤编码")
+    step_name = models.CharField(max_length=64, verbose_name="步骤名称")
+    status = models.CharField(
+        max_length=16, choices=STEP_STATUS_CHOICES, default="pending", verbose_name="步骤状态",
+    )
+    output = models.TextField(blank=True, default="", verbose_name="步骤输出")
+    sort_order = models.PositiveSmallIntegerField(default=0, verbose_name="排序")
+    started_at = models.DateTimeField(null=True, blank=True, verbose_name="开始时间")
+    finished_at = models.DateTimeField(null=True, blank=True, verbose_name="结束时间")
+
+    class Meta:
+        db_table = "dbmgr_deploy_job_step"
+        verbose_name = "数据库部署步骤"
+        verbose_name_plural = verbose_name
+        ordering = ["sort_order", "id"]
+        constraints = [
+            models.UniqueConstraint(fields=["job", "step_code"], name="uniq_dbmgr_deploy_job_step"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.job_id} / {self.step_code}"

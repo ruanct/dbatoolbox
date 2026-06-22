@@ -10,45 +10,14 @@ from django.utils import timezone
 from .models import BatchTask, BatchTaskHost, FileDistTask, FileDistTaskHost, HostAccount, HostIP
 
 
-def _build_inventory(host_ids):
-    """构建 ansible inventory 内容"""
-    lines = ["[targets]"]
-    hosts = {}
-    ip_qs = HostIP.objects.filter(
-        host_id__in=host_ids,
-    ).order_by("host_id", "id").select_related("host")
-    ip_map = {}
-    for ip in ip_qs:
-        if ip.host_id not in ip_map:
-            ip_map[ip.host_id] = ip.ip_address
-    account_qs = HostAccount.objects.filter(
-        host_id__in=host_ids, account_type="adm",
-    ).select_related("host")
-    account_map = {}
-    for acct in account_qs:
-        if acct.host_id not in account_map:
-            account_map[acct.host_id] = acct
-    from .models import Host
-    for host in Host.objects.filter(id__in=host_ids):
-        ip_addr = ip_map.get(host.id, "")
-        acct = account_map.get(host.id)
-        if not ip_addr:
-            continue
-        user = acct.account_name if acct else "root"
-        pswd = acct.account_pswd if acct else ""
-        port = host.ssh_port or 22
-        line = (
-            f'{host.hostname} ansible_host={ip_addr} ansible_user={user} '
-            f'ansible_ssh_pass="{pswd}" ansible_port={port} '
-            f'ansible_ssh_common_args="-o StrictHostKeyChecking=no'
-            f' -o UserKnownHostsFile=/dev/null'
-            f' -o HostKeyAlgorithms=+ssh-rsa,ssh-dss'
-            f' -o ServerAliveInterval=30'
-            f' -o ConnectTimeout=15"'
-        )
-        lines.append(line)
-        hosts[host.hostname] = host.id
-    return "\n".join(lines), hosts
+def _build_inventory(host_ids, python_interpreter_by_host_id=None):
+    """构建 ansible inventory 内容。"""
+    from .ansible_inventory import build_inventory
+
+    return build_inventory(
+        host_ids,
+        python_interpreter_by_host_id=python_interpreter_by_host_id,
+    )
 
 
 def _format_delta(delta_str):

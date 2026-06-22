@@ -1,0 +1,281 @@
+---
+- hosts: targets
+  become: true
+  gather_facts: true
+  vars:
+    d: "{{ deploy }}"
+    oracle_base: "{{ d.install.oracle_base | default('/u01/app/oracle') }}"
+    oracle_home: "{{ d.install.oracle_home }}"
+    ora_inventory: "{{ d.install.ora_inventory | default('/u01/app/oraInventory') }}"
+    datafile_dest: "{{ d.install.datafile_dest | default('/u01/oradata') }}"
+    oracle_port: "{{ d.cmdb.port | default(1521) }}"
+    oracle_sid: "{{ d.cmdb.sid | default('ORCL') }}"
+    oracle_service: "{{ d.cmdb.service_name | default(d.cmdb.sid | default('orcl')) | lower }}"
+    oracle_download_url: "{{ d.media.download_url }}"
+    staging_dir: "/tmp/oracle_deploy_{{ d.cmdb.instance_name | default('db') }}"
+
+  tasks:
+    - name: "[precheck] 检查 ORACLE_HOME 是否已存在"
+      tags: [precheck]
+      stat:
+        path: "{{ oracle_home }}/bin/sqlplus"
+      register: sqlplus_bin
+
+    - name: "[precheck] ORACLE_HOME 冲突"
+      tags: [precheck]
+      fail:
+        msg: "ORACLE_HOME 已存在: {{ oracle_home }}"
+      when: sqlplus_bin.stat.exists
+
+    - name: "[precheck] 检查监听端口"
+      tags: [precheck]
+      wait_for:
+        port: "{{ oracle_port }}"
+        state: stopped
+        timeout: 5
+      register: ora_port
+      failed_when: false
+
+    - name: "[precheck] 端口已被占用"
+      tags: [precheck]
+      fail:
+        msg: "端口 {{ oracle_port }} 已被占用"
+      when: ora_port.failed | default(false)
+
+    - name: "[precheck] 检查安装包 URL"
+      tags: [precheck]
+      uri:
+        url: "{{ oracle_download_url }}"
+        method: HEAD
+        status_code: [200, 302]
+      register: media_head
+      failed_when: false
+
+    - name: "[precheck] 介质不可达"
+      tags: [precheck]
+      fail:
+        msg: "无法访问安装包: {{ oracle_download_url }}"
+      when: media_head.status is not defined or media_head.status not in [200, 302]
+
+    - name: "[prepare] 安装依赖包"
+      tags: [prepare]
+      yum:
+        name:
+          - binutils
+          - compat-libcap1
+          - compat-libstdc++-33
+          - glibc
+          - glibc-devel
+          - ksh
+          - libaio
+          - libaio-devel
+          - libX11
+          - libXau
+          - libXi
+          - libXtst
+          - libgcc
+          - libstdc++
+          - libxcb
+          - make
+          - nfs-utils
+          - smartmontools
+          - sysstat
+        state: present
+      failed_when: false
+
+    - name: "[prepare] 创建 oracle 组"
+      tags: [prepare]
+      group:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - oinstall
+        - dba
+        - oper
+
+    - name: "[prepare] 创建 oracle 用户"
+      tags: [prepare]
+      user:
+        name: oracle
+        group: oinstall
+        groups: dba,oper
+        append: true
+        shell: /bin/bash
+        home: "{{ oracle_base }}"
+
+    - name: "[prepare] 创建 Oracle 目录"
+      tags: [prepare]
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: oracle
+        group: oinstall
+        mode: "0755"
+      loop:
+        - "{{ oracle_base }}"
+        - "{{ datafile_dest }}"
+        - "{{ staging_dir }}"
+
+    - name: "[install] 下载 Oracle 安装包"
+      tags: [install]
+      get_url:
+        url: "{{ oracle_download_url }}"
+        dest: "{{ staging_dir }}/{{ d.media.filename }}"
+        mode: "0644"
+
+    - name: "[install] 解压安装包"
+      tags: [install]
+      unarchive:
+        src: "{{ staging_dir }}/{{ d.media.filename }}"
+        dest: "{{ staging_dir }}"
+        remote_src: true
+
+    - name: "[install] 生成 runInstaller 响应文件"
+      tags: [install]
+      copy:
+        dest: "{{ staging_dir }}/db_install.rsp"
+        owner: oracle
+        group: oinstall
+        mode: "0600"
+        content: |
+          oracle.install.option=INSTALL_DB_SWONLY
+          ORACLE_HOSTNAME={{ ansible_hostname }}
+          UNIX_GROUP_NAME=oinstall
+          INVENTORY_LOCATION={{ ora_inventory }}
+          SELECTED_LANGUAGES=en
+          ORACLE_HOME={{ oracle_home }}
+          ORACLE_BASE={{ oracle_base }}
+          oracle.install.db.InstallEdition=EE
+          oracle.install.db.OSDBA_GROUP=dba
+          oracle.install.db.OSOPER_GROUP=oper
+          oracle.install.db.OSBACKUPDBA_GROUP=dba
+          oracle.install.db.OSDGDBA_GROUP=dba
+          oracle.install.db.OSKMDBA_GROUP=dba
+          oracle.install.db.OSRACDBA_GROUP=dba
+          SECURITY_UPDATES_VIA_MYORACLESUPPORT=false
+          DECLINE_SECURITY_UPDATES=true
+
+    - name: "[install] 执行 runInstaller"
+      tags: [install]
+      become: true
+      become_user: oracle
+      shell: |
+        set -e
+        INSTALLER=$(find {{ staging_dir }} -name runInstaller -type f | head -1)
+        "$INSTALLER" -silent -waitforcompletion -ignorePrereq -responseFile {{ staging_dir }}/db_install.rsp
+        {{ ora_inventory }}/orainstRoot.sh
+        {{ oracle_home }}/root.sh
+      args:
+        creates: "{{ oracle_home }}/bin/sqlplus"
+      environment:
+        ORACLE_BASE: "{{ oracle_base }}"
+        ORACLE_HOME: "{{ oracle_home }}"
+
+    - name: "[configure] 部署 oracle 环境变量"
+      tags: [configure]
+      copy:
+        dest: /home/oracle/.bash_profile
+        owner: oracle
+        group: oinstall
+        mode: "0644"
+        content: |
+          export ORACLE_BASE={{ oracle_base }}
+          export ORACLE_HOME={{ oracle_home }}
+          export ORACLE_SID={{ oracle_sid }}
+          export PATH=$ORACLE_HOME/bin:$PATH
+          export LD_LIBRARY_PATH=$ORACLE_HOME/lib:$LD_LIBRARY_PATH
+
+    - name: "[configure] 部署 listener.ora"
+      tags: [configure]
+      copy:
+        dest: "{{ oracle_home }}/network/admin/listener.ora"
+        owner: oracle
+        group: oinstall
+        mode: "0644"
+        content: |
+          LISTENER =
+            (DESCRIPTION_LIST =
+              (DESCRIPTION =
+                (ADDRESS = (PROTOCOL = TCP)(HOST = {{ ansible_default_ipv4.address }})(PORT = {{ oracle_port }}))
+              )
+            )
+          SID_LIST_LISTENER =
+            (SID_LIST =
+              (SID_DESC =
+                (GLOBAL_DBNAME = {{ oracle_service }})
+                (ORACLE_HOME = {{ oracle_home }})
+                (SID_NAME = {{ oracle_sid }})
+              )
+            )
+
+    - name: "[initialize] 生成 DBCA 响应文件"
+      tags: [initialize]
+      copy:
+        dest: "{{ staging_dir }}/dbca.rsp"
+        owner: oracle
+        group: oinstall
+        mode: "0600"
+        content: |
+          responseFileVersion=/oracle/assistants/rspfmt_dbca_response_schema_v19.0.0
+          gdbName={{ oracle_service }}
+          sid={{ oracle_sid }}
+          databaseConfigType=SI
+          RMANConfigType=NONE
+          createAsContainerDatabase=false
+          templateName=General_Purpose.dbc
+          sysPassword={{ d.credentials.sys_password }}
+          systemPassword={{ d.credentials.system_password | default(d.credentials.sys_password) }}
+          datafileDestination={{ datafile_dest }}
+          recoveryAreaDestination={{ datafile_dest }}/fast_recovery_area
+          characterSet={{ d.config.character_set | default('AL32UTF8') }}
+          nationalCharacterSet={{ d.config.national_character_set | default('AL16UTF16') }}
+          memoryPercentage=40
+          automaticMemoryManagement=false
+          totalMemory={{ d.config.memory_target_mb | default(4096) }}
+
+    - name: "[initialize] 执行 DBCA 建库"
+      tags: [initialize]
+      become: true
+      become_user: oracle
+      shell: |
+        set -e
+        source /home/oracle/.bash_profile
+        {{ oracle_home }}/bin/dbca -silent -createDatabase -responseFile {{ staging_dir }}/dbca.rsp
+      args:
+        creates: "{{ datafile_dest }}/{{ oracle_sid }}"
+      environment:
+        ORACLE_BASE: "{{ oracle_base }}"
+        ORACLE_HOME: "{{ oracle_home }}"
+        ORACLE_SID: "{{ oracle_sid }}"
+
+    - name: "[start] 启动监听"
+      tags: [start]
+      become: true
+      become_user: oracle
+      shell: |
+        source /home/oracle/.bash_profile
+        lsnrctl start
+      environment:
+        ORACLE_HOME: "{{ oracle_home }}"
+
+    - name: "[post_config] 开放 1521 端口"
+      tags: [post_config]
+      wait_for:
+        port: "{{ oracle_port }}"
+        delay: 5
+        timeout: 180
+
+    - name: "[verify] 探测 Oracle 版本"
+      tags: [verify]
+      become: true
+      become_user: oracle
+      shell: |
+        source /home/oracle/.bash_profile
+        echo "SELECT banner FROM v\$version WHERE banner LIKE 'Oracle%';" | sqlplus -s / as sysdba
+      register: ora_version
+      changed_when: false
+
+    - name: "[verify] 输出版本"
+      tags: [verify]
+      debug:
+        msg: "{{ ora_version.stdout_lines }}"

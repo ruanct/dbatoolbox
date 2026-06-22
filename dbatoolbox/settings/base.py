@@ -174,6 +174,16 @@ CELERY_BEAT_SCHEDULE = {
     },
 }
 
+# 数据库部署介质库（可被 .env 覆盖）
+DEPLOY_MYSQL_MEDIA_BASE_URL = env(
+    "DEPLOY_MYSQL_MEDIA_BASE_URL",
+    default="http://10.32.14.211/soft/mysql/tgz/",
+)
+DEPLOY_ORACLE_MEDIA_BASE_URL = env(
+    "DEPLOY_ORACLE_MEDIA_BASE_URL",
+    default="http://10.32.14.211/soft/oracle/zip/",
+)
+
 # Media 文件（用户上传分发文件）
 MEDIA_ROOT = BASE_DIR.parent / "media"
 MEDIA_URL = "/media/"

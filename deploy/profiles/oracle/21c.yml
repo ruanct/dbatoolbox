@@ -1,0 +1,32 @@
+engine: oracle
+profile_code: oracle-21c
+display_name: Oracle Database 21c
+major_version: "21"
+status: enabled
+supported_os:
+  - centos7
+supported_job_types:
+  - oracle_standalone
+install_method: zip_http
+package_ref: oracle-21c-db-home
+media_base_url: "http://10.32.14.211/soft/oracle/zip/"
+media_subdir: "21c"
+package_filename: "LINUX.X64_213000_db_home.zip"
+playbook_variant: install_21c_zip
+min_memory_gb: 8
+default_params:
+  cmdb:
+    port: 1521
+    topology: standalone
+    role: master
+  install:
+    oracle_base: "/u01/app/oracle"
+    oracle_home: "/u01/app/oracle/product/21c/dbhome_1"
+    ora_inventory: "/u01/app/oraInventory"
+    datafile_dest: "/u01/oradata"
+  config:
+    character_set: AL32UTF8
+    national_character_set: AL16UTF16
+    memory_target_mb: 4096
+    processes: 300
+remark: "介质来自内网 HTTP 软件库 oracle/zip/21c"

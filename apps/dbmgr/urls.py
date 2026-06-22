@@ -14,4 +14,9 @@ urlpatterns = [
     path("db-dashboard/", views.db_dashboard_view, name="db_dashboard"),
     path("db-dashboard/table/", views.db_dashboard_table_view, name="db_dashboard_table"),
     path("db-dashboard/api/", views.db_dashboard_api_view, name="db_dashboard_api"),
+    path("db-deploy/", views.deploy_job_list_view, name="db_deploy_list"),
+    path("db-deploy/<int:job_id>/", views.deploy_job_detail_view, name="db_deploy_detail"),
+    path("db-deploy/api/", views.deploy_job_api_view, name="db_deploy_api"),
+    path("db-deploy/api/<int:job_id>/", views.deploy_job_detail_api_view, name="db_deploy_detail_api"),
+    path("db-deploy/profiles/api/", views.deploy_profile_api_view, name="db_deploy_profiles_api"),
 ]

@@ -1,0 +1,279 @@
+---
+- hosts: targets
+  become: true
+  gather_facts: true
+  vars:
+    d: "{{ deploy }}"
+    mysql_basedir: "{{ d.install.basedir | default('/usr/local/mysql') }}"
+    mysql_port: "{{ d.cmdb.port | default(3306) }}"
+    mysql_instance_root: "{{ d.install.instance_root | default('/data/mysql' ~ mysql_port) }}"
+    mysql_datadir: "{{ d.install.datadir | default(mysql_instance_root ~ '/data') }}"
+    mysql_socket: "{{ d.install.socket | default(mysql_instance_root ~ '/mysql.sock') }}"
+    mysql_cnf_path: "{{ d.install.cnf_path | default(mysql_instance_root ~ '/my.cnf') }}"
+    mysql_log_error: "{{ d.install.log_error | default(mysql_instance_root ~ '/mysql_err.log') }}"
+    mysql_service_name: "{{ d.install.service_name | default('mysqld' ~ mysql_port) }}"
+    mysql_binlog_dir: "{{ d.install.binlog_dir | default(mysql_instance_root ~ '/binlog') }}"
+    mysql_log_bin: "{{ d.install.log_bin | default(mysql_binlog_dir ~ '/mysql-bin') }}"
+    mysql_server_id: "{{ d.config.server_id }}"
+    mysql_enable_binlog: "{{ d.config.enable_binlog | default(true) | bool }}"
+    mysql_enable_gtid: "{{ d.config.enable_gtid | default(true) | bool }}"
+    mysql_download_url: "{{ d.media.download_url }}"
+
+  tasks:
+    - name: "[precheck] 检查 MySQL 程序是否已安装"
+      tags: [precheck]
+      stat:
+        path: "{{ mysql_basedir }}/bin/mysqld"
+      register: mysqld_bin
+
+    - name: "[precheck] 检查实例数据目录是否已存在"
+      tags: [precheck]
+      stat:
+        path: "{{ mysql_datadir }}/mysql"
+      register: mysql_datadir_inited
+
+    - name: "[precheck] 实例数据目录冲突"
+      tags: [precheck]
+      fail:
+        msg: "实例数据目录已存在: {{ mysql_datadir }}"
+      when: mysql_datadir_inited.stat.exists | default(false)
+
+    - name: "[precheck] 检查端口占用"
+      tags: [precheck]
+      wait_for:
+        port: "{{ mysql_port }}"
+        state: stopped
+        timeout: 5
+      register: port_check
+      failed_when: false
+
+    - name: "[precheck] 端口已被占用"
+      tags: [precheck]
+      fail:
+        msg: "端口 {{ mysql_port }} 已被占用"
+      when: port_check.failed | default(false)
+
+    - name: "[precheck] 检查介质 URL 可达"
+      tags: [precheck]
+      uri:
+        url: "{{ mysql_download_url }}"
+        method: HEAD
+        status_code: [200, 302]
+      register: media_head
+      failed_when: false
+
+    - name: "[precheck] 介质不可达"
+      tags: [precheck]
+      fail:
+        msg: "无法访问安装包: {{ mysql_download_url }}"
+      when: media_head.status is not defined or media_head.status not in [200, 302]
+
+    - name: "[prepare] 创建 mysql 组"
+      tags: [prepare]
+      group:
+        name: mysql
+        state: present
+
+    - name: "[prepare] 创建 mysql 用户"
+      tags: [prepare]
+      user:
+        name: mysql
+        group: mysql
+        shell: /sbin/nologin
+        system: true
+        create_home: false
+
+    - name: "[prepare] 创建实例目录"
+      tags: [prepare]
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: mysql
+        group: mysql
+        mode: "0750"
+      loop:
+        - "{{ mysql_instance_root }}"
+        - "{{ mysql_datadir }}"
+        - "{{ mysql_basedir | dirname }}"
+
+    - name: "[prepare] 创建 binlog 目录"
+      tags: [prepare]
+      file:
+        path: "{{ mysql_binlog_dir }}"
+        state: directory
+        owner: mysql
+        group: mysql
+        mode: "0750"
+      when: mysql_enable_binlog | bool
+
+    - name: "[install] 检查 MySQL 程序是否已安装"
+      tags: [install]
+      stat:
+        path: "{{ mysql_basedir }}/bin/mysqld"
+      register: mysqld_bin
+
+    - name: "[install] 下载 MySQL 安装包"
+      tags: [install]
+      get_url:
+        url: "{{ mysql_download_url }}"
+        dest: "/tmp/{{ d.media.filename }}"
+        mode: "0644"
+      register: mysql_pkg
+      when: not mysqld_bin.stat.exists | default(false)
+
+    - name: "[install] 解压安装包"
+      tags: [install]
+      unarchive:
+        src: "/tmp/{{ d.media.filename }}"
+        dest: "{{ mysql_basedir | dirname }}"
+        remote_src: true
+        creates: "{{ mysql_basedir }}/bin/mysqld"
+      register: unarchive_result
+      when: not mysqld_bin.stat.exists | default(false)
+
+    - name: "[install] 查找解压目录"
+      tags: [install]
+      find:
+        paths: "{{ mysql_basedir | dirname }}"
+        patterns: "mysql-*"
+        file_type: directory
+        depth: 1
+      register: mysql_dirs
+      when: not mysqld_bin.stat.exists | default(false)
+
+    - name: "[install] 建立 basedir 软链接"
+      tags: [install]
+      file:
+        src: "{{ (mysql_dirs.files | sort(attribute='path') | last).path }}"
+        dest: "{{ mysql_basedir }}"
+        state: link
+      when:
+        - not mysqld_bin.stat.exists | default(false)
+        - mysql_dirs.matched | default(0) > 0
+
+    - name: "[install] 设置程序目录权限"
+      tags: [install]
+      file:
+        path: "{{ mysql_basedir }}"
+        state: directory
+        owner: mysql
+        group: mysql
+        recurse: true
+        follow: true
+      when: not mysqld_bin.stat.exists | default(false)
+
+    - name: "[configure] 部署 my.cnf"
+      tags: [configure]
+      copy:
+        dest: "{{ mysql_cnf_path }}"
+        owner: mysql
+        group: mysql
+        mode: "0644"
+        content: |
+          [mysqld]
+          basedir={{ mysql_basedir }}
+          datadir={{ mysql_datadir }}
+          port={{ mysql_port }}
+          socket={{ mysql_socket }}
+          character-set-server={{ d.config.character_set | default('utf8mb4') }}
+          collation-server={{ d.config.collation | default('utf8mb4_unicode_ci') }}
+          max_connections={{ d.config.max_connections | default(500) }}
+          innodb_buffer_pool_size={{ d.config.innodb_buffer_pool_size | default('1G') }}
+          default_authentication_plugin={{ d.config.default_authentication_plugin | default('mysql_native_password') }}
+          log-error={{ mysql_log_error }}
+          pid-file={{ mysql_datadir }}/mysqld.pid
+          symbolic-links=0
+          explicit_defaults_for_timestamp=1
+          {% if mysql_enable_binlog | bool %}
+          server_id={{ mysql_server_id }}
+          log_bin={{ mysql_log_bin }}
+          binlog_format={{ d.config.binlog_format | default('ROW') }}
+          {% if mysql_enable_gtid | bool %}
+          gtid_mode=ON
+          enforce_gtid_consistency=ON
+          log_slave_updates=ON
+          {% endif %}
+          {% else %}
+          skip-log-bin
+          {% endif %}
+          [client]
+          socket={{ mysql_socket }}
+          default-character-set={{ d.config.character_set | default('utf8mb4') }}
+
+    - name: "[initialize] 初始化数据目录"
+      tags: [initialize]
+      command: >
+        {{ mysql_basedir }}/bin/mysqld
+        --defaults-file={{ mysql_cnf_path }}
+        --initialize-insecure
+        --user=mysql
+      args:
+        creates: "{{ mysql_datadir }}/mysql"
+
+    - name: "[start] 部署 systemd 服务"
+      tags: [start]
+      copy:
+        dest: "/etc/systemd/system/{{ mysql_service_name }}.service"
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=MySQL Server {{ mysql_port }}
+          After=network.target
+          [Service]
+          Type=forking
+          User=mysql
+          Group=mysql
+          ExecStart={{ mysql_basedir }}/bin/mysqld --defaults-file={{ mysql_cnf_path }} --daemonize --pid-file={{ mysql_datadir }}/mysqld.pid
+          ExecStop={{ mysql_basedir }}/bin/mysqladmin -uroot -p'{{ d.credentials.root_password }}' -S {{ mysql_socket }} shutdown
+          Restart=on-failure
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: "[start] 启动 MySQL"
+      tags: [start]
+      systemd:
+        name: "{{ mysql_service_name }}"
+        state: started
+        enabled: true
+        daemon_reload: true
+
+    - name: "[post_config] 等待 MySQL 就绪"
+      tags: [post_config]
+      wait_for:
+        port: "{{ mysql_port }}"
+        delay: 3
+        timeout: 120
+
+    - name: "[post_config] 设置 root 密码"
+      tags: [post_config]
+      command: >
+        {{ mysql_basedir }}/bin/mysqladmin
+        -uroot -S {{ mysql_socket }}
+        password '{{ d.credentials.root_password }}'
+      register: root_pwd
+      failed_when: false
+      changed_when: root_pwd.rc == 0
+
+    - name: "[post_config] 创建运维账号"
+      tags: [post_config]
+      command: >
+        {{ mysql_basedir }}/bin/mysql
+        -uroot -p'{{ d.credentials.root_password }}' -S {{ mysql_socket }}
+        -e "CREATE USER IF NOT EXISTS '{{ d.credentials.admin_account.account_name | default('admin') }}'@'{{ d.credentials.admin_account.grant_host | default('%') }}' IDENTIFIED BY '{{ d.credentials.admin_account.account_pswd }}'; GRANT ALL PRIVILEGES ON *.* TO '{{ d.credentials.admin_account.account_name | default('admin') }}'@'{{ d.credentials.admin_account.grant_host | default('%') }}' WITH GRANT OPTION; FLUSH PRIVILEGES;"
+      when: d.credentials.admin_account is defined and d.credentials.admin_account.account_name is defined
+      register: admin_user
+      failed_when: false
+
+    - name: "[verify] 探测版本"
+      tags: [verify]
+      command: >
+        {{ mysql_basedir }}/bin/mysql
+        -uroot -p'{{ d.credentials.root_password }}' -S {{ mysql_socket }}
+        -Nse "SELECT VERSION();"
+      register: mysql_version
+      changed_when: false
+
+    - name: "[verify] 输出版本"
+      tags: [verify]
+      debug:
+        msg: "MySQL version={{ mysql_version.stdout | trim }}"

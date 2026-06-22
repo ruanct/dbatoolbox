@@ -1,0 +1,460 @@
+{% extends "base.html" %}
+{% block title %}实例部署 - DBAToolbox{% endblock %}
+
+{% block content %}
+<div class="breadcrumb">数据库管理 / 实例部署</div>
+
+<style>
+.deploy-form-table { margin: 0; }
+.deploy-form-table td.deploy-label {
+    width: 14%;
+    text-align: right;
+    white-space: nowrap;
+    color: #666;
+}
+.deploy-form-table td.deploy-field { width: 36%; }
+.deploy-form-wrap { padding: 15px 20px 5px; max-height: 80vh; overflow-y: auto; }
+</style>
+
+<div class="layui-card">
+    <div class="layui-card-header"><span>部署任务列表</span></div>
+    <div class="layui-card-body">
+        <div class="layui-form layui-form-item" style="margin-bottom:10px;">
+            <div class="layui-inline">
+                <input type="text" id="search-keyword" placeholder="实例名/主机/创建人" class="layui-input" style="width:240px;">
+            </div>
+            <button class="layui-btn" id="btn-search"><i class="layui-icon layui-icon-search"></i> 搜索</button>
+            <button class="layui-btn layui-btn-normal" id="btn-add"><i class="layui-icon layui-icon-add-1"></i> 新建部署</button>
+        </div>
+        <table id="main-table" lay-filter="main-table"></table>
+    </div>
+</div>
+
+<script type="text/html" id="action-bar">
+    <a class="layui-btn layui-btn-xs" lay-event="detail">详情</a>
+</script>
+{% endblock %}
+
+{% block extra_script %}
+<script>
+var jobTypes = {{ job_types|safe }};
+var hosts = {{ hosts|safe }};
+var environments = {{ environments|safe }};
+var businesses = {{ businesses|safe }};
+var profiles = {{ profiles|safe }};
+
+function getCookie(name) {
+    var r = document.cookie.match("\\b" + name + "=([^;]*)\\b");
+    return r ? r[1] : '';
+}
+
+function filterProfiles(jobType) {
+    return profiles.filter(function(p) {
+        return (p.supported_job_types || []).indexOf(jobType) >= 0;
+    });
+}
+
+function buildSelect(id, list, val, placeholder, valueKey, labelKey) {
+    valueKey = valueKey || 'value';
+    labelKey = labelKey || 'label';
+    var html = '<select id="' + id + '" class="layui-input">';
+    html += '<option value="">' + placeholder + '</option>';
+    for (var i = 0; i < list.length; i++) {
+        var item = list[i];
+        var v = item[valueKey];
+        var selected = String(v) === String(val) ? ' selected' : '';
+        html += '<option value="' + v + '"' + selected + '>' + item[labelKey] + '</option>';
+    }
+    html += '</select>';
+    return html;
+}
+
+function buildHostSelect(val) {
+    return buildSelect('f-host', hosts.map(function(h) {
+        return {value: h.id, label: h.display_name + ' (' + (h.business_ip || '-') + ')'};
+    }), val, '请选择');
+}
+
+function buildEnvSelect(val) {
+    return buildSelect('f-env', environments.map(function(e) {
+        return {value: e.id, label: e.name};
+    }), val, '请选择');
+}
+
+function buildBizSelect(val) {
+    return buildSelect('f-biz', businesses.map(function(b) {
+        return {value: b.id, label: b.name};
+    }), val, '请选择');
+}
+
+function formRow2(label1, field1, label2, field2) {
+    return '<tr>'
+        + '<td class="deploy-label">' + label1 + '</td><td class="deploy-field">' + field1 + '</td>'
+        + '<td class="deploy-label">' + label2 + '</td><td class="deploy-field">' + field2 + '</td>'
+        + '</tr>';
+}
+
+function mysqlInstanceRoot(port) {
+    var p = parseInt(port, 10) || 3306;
+    return '/data/mysql' + p;
+}
+
+function buildMysqlServerId(connectHost, port) {
+    var p = parseInt(port, 10) || 3306;
+    var host = (connectHost || '').trim();
+    var parts = host.split('.');
+    if (parts.length >= 4) {
+        var third = parseInt(parts[2], 10);
+        var fourth = parseInt(parts[3], 10);
+        if (!isNaN(third) && !isNaN(fourth)) {
+            return parseInt(String(third) + String(fourth) + String(p), 10);
+        }
+    }
+    return p;
+}
+
+function mysqlPathPreviewHtml(port, connectHost, enableBinlog, enableGtid) {
+    var root = mysqlInstanceRoot(port);
+    var binlogOn = !!enableBinlog;
+    var gtidOn = binlogOn && !!enableGtid;
+    var serverId = buildMysqlServerId(connectHost, port);
+    var logBin = root + '/binlog/mysql-bin';
+    var html = '<div style="font-size:12px;color:#666;line-height:1.8;">'
+        + '实例目录：<code>' + root + '</code><br>'
+        + '参数文件：<code>' + root + '/my.cnf</code><br>'
+        + '数据目录：<code>' + root + '/data</code><br>'
+        + 'Socket：<code>' + root + '/mysql.sock</code><br>'
+        + '错误日志：<code>' + root + '/mysql_err.log</code>';
+    if (binlogOn) {
+        html += '<br>server_id：<code>' + serverId + '</code>'
+            + '<br>log_bin：<code>' + logBin + '</code>'
+            + '<br>binlog_format：<code>ROW</code>';
+    }
+    if (gtidOn) {
+        html += '<br>gtid_mode：<code>ON</code>'
+            + '<br>enforce_gtid_consistency：<code>ON</code>'
+            + '<br>log_slave_updates：<code>ON</code>';
+    }
+    html += '</div>';
+    return html;
+}
+
+var mysqlDeploySwitchState = {binlog: true, gtid: true};
+var deployMysqlSwitchBound = false;
+
+function resetMysqlDeploySwitchState() {
+    mysqlDeploySwitchState.binlog = true;
+    mysqlDeploySwitchState.gtid = true;
+}
+
+function isMysqlBinlogEnabled() {
+    return !!mysqlDeploySwitchState.binlog;
+}
+
+function isMysqlGtidEnabled() {
+    return !!mysqlDeploySwitchState.binlog && !!mysqlDeploySwitchState.gtid;
+}
+
+/**
+ * LayUI switch 与原生 checkbox 易不同步：以 mysqlDeploySwitchState 为唯一数据源，
+ * 先写回 input 属性，再对 deploy-mysql-panel 局部 form.render，避免全页 render 重置开关。
+ */
+function renderMysqlSwitches() {
+    var $binlog = $('#f-enable-binlog');
+    var $gtid = $('#f-enable-gtid');
+    if (!$binlog.length) {
+        return;
+    }
+    $binlog.prop('checked', mysqlDeploySwitchState.binlog);
+    $gtid.prop('checked', mysqlDeploySwitchState.gtid);
+    $binlog.removeAttr('disabled');
+    $gtid.removeAttr('disabled');
+    layui.form.render('checkbox', 'deploy-mysql-panel');
+    updateMysqlPathPreview();
+}
+
+function applyMysqlSwitchUi() {
+    renderMysqlSwitches();
+}
+
+function setMysqlBinlogEnabled(enabled) {
+    mysqlDeploySwitchState.binlog = !!enabled;
+    if (!mysqlDeploySwitchState.binlog) {
+        mysqlDeploySwitchState.gtid = false;
+    }
+    applyMysqlSwitchUi();
+}
+
+function setMysqlGtidEnabled(enabled) {
+    if (enabled) {
+        mysqlDeploySwitchState.binlog = true;
+        mysqlDeploySwitchState.gtid = true;
+    } else {
+        mysqlDeploySwitchState.gtid = false;
+    }
+    applyMysqlSwitchUi();
+}
+
+function bindMysqlDeploySwitchEvents() {
+    if (deployMysqlSwitchBound) {
+        return;
+    }
+    layui.form.on('switch(f-enable-binlog)', function(data) {
+        setMysqlBinlogEnabled(!!data.elem.checked);
+    });
+    layui.form.on('switch(f-enable-gtid)', function(data) {
+        setMysqlGtidEnabled(!!data.elem.checked);
+    });
+    deployMysqlSwitchBound = true;
+}
+function updateMysqlPathPreview() {
+    var $cell = $('#mysql-path-preview-cell');
+    if ($cell.length) {
+        $cell.html(mysqlPathPreviewHtml(
+            $('#f-port').val(),
+            $('#f-connect-host').val(),
+            mysqlDeploySwitchState.binlog,
+            mysqlDeploySwitchState.gtid
+        ));
+    }
+}
+
+function buildMysqlPanelRows() {
+    return formRow2(
+            'Binlog',
+            '<input type="checkbox" id="f-enable-binlog" lay-skin="switch" lay-text="开启|关闭" lay-filter="f-enable-binlog" checked>',
+            'GTID',
+            '<input type="checkbox" id="f-enable-gtid" lay-skin="switch" lay-text="开启|关闭" lay-filter="f-enable-gtid" checked>'
+        )
+        + '<tr><td class="deploy-label">实例参数</td><td class="deploy-field" colspan="3" id="mysql-path-preview-cell">'
+        + mysqlPathPreviewHtml(3306, '', true, true)
+        + '</td></tr>'
+        + formRow2('root密码', '<input id="f-root-password" type="text" class="layui-input">', '运维账号', '<input id="f-mysql-admin-name" class="layui-input" value="admin">')
+        + formRow2('运维密码', '<input id="f-mysql-admin-password" type="text" class="layui-input">', '授权主机', '<input id="f-grant-host" class="layui-input" value="%">')
+        + formRow2('备注', '<input id="f-mysql-remark" class="layui-input">', '', '');
+}
+
+function buildOraclePanelRows() {
+    return formRow2('Oracle SID', '<input id="f-sid" class="layui-input" value="ORCL">', 'Service Name', '<input id="f-service-name" class="layui-input" value="orcl">')
+        + formRow2('SYS密码', '<input id="f-sys-password" type="text" class="layui-input">', 'SYSTEM密码', '<input id="f-system-password" type="text" class="layui-input">')
+        + formRow2('运维账号', '<input id="f-oracle-admin-name" class="layui-input" value="dba">', '运维密码', '<input id="f-oracle-admin-password" type="text" class="layui-input">')
+        + '<tr><td class="deploy-label">备注</td><td class="deploy-field" colspan="3"><input id="f-oracle-remark" class="layui-input"></td></tr>';
+}
+
+function buildCreateFormHtml(defaultJobType, profList) {
+    var isOracle = defaultJobType === 'oracle_standalone';
+    return '<div class="deploy-form-wrap">'
+        + '<table class="layui-table deploy-form-table" lay-size="sm"><tbody>'
+        + formRow2(
+            '部署类型',
+            buildSelect('f-job-type', jobTypes, defaultJobType, '请选择'),
+            '版本档案',
+            buildSelect('f-profile', profList, '', '请选择', 'profile_code', 'display_name')
+        )
+        + formRow2('所属环境', buildEnvSelect(''), '所属业务', buildBizSelect(''))
+        + formRow2('实例名称', '<input id="f-instance-name" class="layui-input" placeholder="全局唯一">', '目标主机', buildHostSelect(''))
+        + formRow2('连接地址', '<input id="f-connect-host" class="layui-input" placeholder="默认取主机业务IP">', '端口', '<input id="f-port" class="layui-input" value="' + (isOracle ? '1521' : '3306') + '">')
+        + '</tbody></table>'
+        + '<form class="layui-form" id="panel-mysql" lay-filter="deploy-mysql-panel" style="' + (isOracle ? 'display:none;' : '') + '">'
+        + '<table class="layui-table deploy-form-table" lay-size="sm"><tbody>'
+        + buildMysqlPanelRows()
+        + '</tbody></table></form>'
+        + '<div id="panel-oracle" style="' + (isOracle ? '' : 'display:none;') + '">'
+        + '<table class="layui-table deploy-form-table" lay-size="sm"><tbody>'
+        + buildOraclePanelRows()
+        + '</tbody></table></div>'
+        + '</div>';
+}
+
+function refreshProfileOptions(jobType) {
+    var list = filterProfiles(jobType);
+    var $p = $('#f-profile');
+    $p.empty().append('<option value="">请选择</option>');
+    for (var i = 0; i < list.length; i++) {
+        $p.append('<option value="' + list[i].profile_code + '">' + list[i].display_name + '</option>');
+    }
+}
+
+function switchDeployPanel(jobType) {
+    if (jobType === 'oracle_standalone') {
+        $('#panel-mysql').hide();
+        $('#panel-oracle').show();
+        if (!$('#f-port').val() || $('#f-port').val() === '3306') {
+            $('#f-port').val('1521');
+        }
+    } else {
+        $('#panel-mysql').show();
+        $('#panel-oracle').hide();
+        if (!$('#f-port').val() || $('#f-port').val() === '1521') {
+            $('#f-port').val('3306');
+        }
+        updateMysqlPathPreview();
+    }
+}
+
+function bindCreateFormEvents() {
+    $('#f-job-type').on('change', function() {
+        var jt = $(this).val();
+        refreshProfileOptions(jt);
+        switchDeployPanel(jt);
+    });
+    $(document).off('change.deployHost').on('change.deployHost', '#f-host', function() {
+        var h = hostById(parseInt($(this).val(), 10));
+        if (h && h.business_ip) {
+            $('#f-connect-host').val(h.business_ip);
+            updateMysqlPathPreview();
+        }
+    });
+    $(document).off('input.deployConnect change.deployConnect').on('input.deployConnect change.deployConnect', '#f-connect-host', function() {
+        updateMysqlPathPreview();
+    });
+    $(document).off('input.deployPort change.deployPort').on('input.deployPort change.deployPort', '#f-port', function() {
+        updateMysqlPathPreview();
+    });
+    bindMysqlDeploySwitchEvents();
+    $(document).off('change.deployProfile').on('change.deployProfile', '#f-profile', function() {
+        var code = $(this).val();
+        for (var i = 0; i < profiles.length; i++) {
+            if (profiles[i].profile_code === code && profiles[i].default_params) {
+                var dp = profiles[i].default_params;
+                if (dp.cmdb && dp.cmdb.port) {
+                    $('#f-port').val(dp.cmdb.port);
+                    updateMysqlPathPreview();
+                }
+            }
+        }
+    });
+}
+
+function hostById(id) {
+    for (var i = 0; i < hosts.length; i++) {
+        if (hosts[i].id === id) return hosts[i];
+    }
+    return null;
+}
+
+function openCreateForm() {
+    var defaultJobType = jobTypes.length ? jobTypes[0].value : '';
+    var profList = filterProfiles(defaultJobType);
+    var html = buildCreateFormHtml(defaultJobType, profList);
+
+    var idx = layer.open({
+        type: 1,
+        title: '新建数据库部署',
+        area: ['1024px', '730px'],
+        content: html,
+        btn: ['提交', '取消'],
+        success: function(layero) {
+            resetMysqlDeploySwitchState();
+            bindCreateFormEvents();
+            renderMysqlSwitches();
+        },
+        end: function() {
+            $(document).off('change.deployHost change.deployProfile input.deployPort change.deployPort');
+        },
+        yes: function() {
+            var jobType = $('#f-job-type').val();
+            var isOracle = jobType === 'oracle_standalone';
+            var remark = isOracle ? $('#f-oracle-remark').val() : $('#f-mysql-remark').val();
+            var adminName = isOracle ? $('#f-oracle-admin-name').val() : $('#f-mysql-admin-name').val();
+            var adminPassword = isOracle ? $('#f-oracle-admin-password').val() : $('#f-mysql-admin-password').val();
+            var body = {
+                job_type: jobType,
+                version_profile_code: $('#f-profile').val(),
+                target_host_id: parseInt($('#f-host').val(), 10),
+                environment_id: parseInt($('#f-env').val(), 10),
+                business_id: parseInt($('#f-biz').val(), 10),
+                remark: remark,
+                params: {
+                    cmdb: {
+                        instance_name: $('#f-instance-name').val(),
+                        connect_host: $('#f-connect-host').val(),
+                        port: parseInt($('#f-port').val(), 10) || (isOracle ? 1521 : 3306)
+                    },
+                    install: {},
+                    credentials: {
+                        admin_account: {
+                            account_name: adminName,
+                            account_pswd: adminPassword,
+                            account_type: 'admin'
+                        }
+                    }
+                }
+            };
+            if (jobType === 'mysql_standalone') {
+                body.params.config = {
+                    enable_binlog: isMysqlBinlogEnabled(),
+                    enable_gtid: isMysqlGtidEnabled()
+                };
+                body.params.credentials.root_password = $('#f-root-password').val();
+                body.params.credentials.admin_account.grant_host = $('#f-grant-host').val();
+            } else {
+                body.params.cmdb.sid = $('#f-sid').val();
+                body.params.cmdb.service_name = $('#f-service-name').val();
+                body.params.credentials.sys_password = $('#f-sys-password').val();
+                body.params.credentials.system_password = $('#f-system-password').val() || $('#f-sys-password').val();
+            }
+            $.ajax({
+                url: '/db-deploy/api/',
+                type: 'POST',
+                contentType: 'application/json',
+                data: JSON.stringify(body),
+                headers: {'X-CSRFToken': getCookie('csrftoken_dbatoolbox')},
+                success: function(r) {
+                    if (r.code === 0) {
+                        layer.close(idx);
+                        layer.msg(r.msg, {icon: 1});
+                        tableIns.reload();
+                        if (r.data && r.data.job_id) {
+                            window.location.href = '/db-deploy/' + r.data.job_id + '/';
+                        }
+                    } else {
+                        layer.msg(r.msg || '创建失败', {icon: 2});
+                    }
+                },
+                error: function(xhr) {
+                    layer.msg((xhr.responseJSON || {}).msg || '请求失败', {icon: 2});
+                }
+            });
+            return false;
+        }
+    });
+}
+
+var tableIns;
+layui.use(['table', 'layer', 'form'], function() {
+    var table = layui.table;
+    bindMysqlDeploySwitchEvents();
+    tableIns = table.render({
+        elem: '#main-table',
+        url: '/db-deploy/api/',
+        page: true,
+        cols: [[
+            {field: 'id', title: 'ID', width: 70},
+            {field: 'job_type__display', title: '部署类型', width: 120},
+            {field: 'version_profile_code', title: '版本档案', width: 130},
+            {field: 'target_host__display', title: '目标主机', minWidth: 140},
+            {field: 'status__display', title: '状态', width: 100},
+            {field: 'instance__display', title: '注册实例', minWidth: 140},
+            {field: 'creator', title: '创建人', width: 90},
+            {field: 'created_at', title: '创建时间', width: 160},
+            {fixed: 'right', title: '操作', toolbar: '#action-bar', width: 90}
+        ]],
+        parseData: function(res) {
+            return {code: res.code, msg: res.msg, count: res.count, data: res.data};
+        }
+    });
+
+    table.on('tool(main-table)', function(obj) {
+        if (obj.event === 'detail') {
+            window.location.href = '/db-deploy/' + obj.data.id + '/';
+        }
+    });
+
+    $('#btn-search').on('click', function() {
+        tableIns.reload({where: {keyword: $('#search-keyword').val()}, page: {curr: 1}});
+    });
+    $('#btn-add').on('click', openCreateForm);
+});
+</script>
+{% endblock %}

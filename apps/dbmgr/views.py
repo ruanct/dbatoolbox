@@ -7,6 +7,16 @@ from django.shortcuts import render
 from django.views.decorators.http import require_http_methods
 
 from .models import DatabaseInstance
+from .deploy_services import (
+    cancel_deploy_job,
+    create_deploy_job,
+    delete_deploy_job,
+    get_deploy_form_options,
+    get_deploy_job_detail,
+    list_deploy_jobs,
+    list_deploy_profiles,
+    retry_deploy_job,
+)
 from .services import (
     ServiceError,
     build_dashboard_data,
@@ -231,3 +241,59 @@ def db_dashboard_api_view(request):
     if request.method == "POST":
         return _json_service(probe_all_instances)
     return _json_service(build_dashboard_data)
+
+
+# ===== 实例部署 =====
+
+@login_required
+def deploy_job_list_view(request):
+    options = get_deploy_form_options()
+    context = {key: json.dumps(val) for key, val in options.items()}
+    return render(request, "dbmgr/deploy_job_list.html", context)
+
+
+@login_required
+def deploy_job_detail_view(request, job_id: int):
+    return render(request, "dbmgr/deploy_job_detail.html", {"job_id": job_id})
+
+
+@login_required
+@require_http_methods(["GET", "POST"])
+def deploy_job_api_view(request):
+    if request.method == "GET":
+        page, limit, keyword = _page_params(request)
+        return _json_service(list_deploy_jobs, page=page, limit=limit, keyword=keyword)
+    try:
+        body = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"code": 1, "msg": "无效的请求数据"}, status=400)
+    if not body.get("creator") and request.user.is_authenticated:
+        body["creator"] = request.user.username
+    return _json_service(create_deploy_job, body)
+
+
+@login_required
+@require_http_methods(["GET", "POST", "DELETE"])
+def deploy_job_detail_api_view(request, job_id: int):
+    if request.method == "GET":
+        return _json_service(get_deploy_job_detail, job_id)
+    if request.method == "DELETE":
+        return _json_service(delete_deploy_job, job_id)
+    try:
+        body = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"code": 1, "msg": "无效的请求数据"}, status=400)
+    action = (body.get("action") or "").strip()
+    if action == "retry":
+        return _json_service(retry_deploy_job, job_id)
+    if action == "cancel":
+        return _json_service(cancel_deploy_job, job_id)
+    return JsonResponse({"code": 1, "msg": "不支持的操作"}, status=400)
+
+
+@login_required
+@require_http_methods(["GET"])
+def deploy_profile_api_view(request):
+    job_type = request.GET.get("job_type", "").strip() or None
+    engine = request.GET.get("engine", "").strip() or None
+    return _json_service(list_deploy_profiles, job_type=job_type, engine=engine)
