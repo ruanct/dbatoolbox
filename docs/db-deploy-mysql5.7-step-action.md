@@ -41,10 +41,13 @@
 | 子项 | 说明 |
 |------|------|
 | Python 预检 | SSH 到目标主机，探测 Python ≥ 3.8，确定 `ansible_python_interpreter` |
-| 程序目录检查 | 检查 `{{ basedir }}/bin/mysqld` 是否存在（仅记录，不阻断） |
+| 程序目录检查 | 检查 `{{ basedir }}/bin/mysqld` 是否存在 |
+| **major 版本校验** | 若 `mysqld` 已存在：执行 `mysqld --version`，解析 major（如 `5.7`），与 `d.profile.major_version` 比对；不一致或无法解析 → **失败** |
 | 数据目录冲突 | 若 `{{ datadir }}/mysql` 已存在 → **失败**（实例已初始化） |
 | 端口占用 | 检测 `{{ port }}` 是否被监听，已占用 → **失败** |
 | 介质可达 | 对安装包 URL 发 HTTP HEAD，非 200/302 → **失败** |
+
+> 若目标机尚未安装 MySQL 程序（`mysqld` 不存在），跳过 major 版本校验，后续由 install 步骤下载安装。
 
 ---
 
@@ -67,7 +70,7 @@
 
 | 子项 | 说明 |
 |------|------|
-| 检查是否已安装 | 若 `{{ basedir }}/bin/mysqld` 已存在 → **跳过下载/解压** |
+| 检查是否已安装 | 若 `{{ basedir }}/bin/mysqld` 已存在 → **跳过下载/解压**（precheck 已校验 major 版本一致） |
 | 下载安装包 | `get_url` 从内网 URL 下载到 `/tmp/{{ filename }}` |
 | 解压 | `unarchive` 到 basedir 父目录（如 `/usr/local`） |
 | 建立软链接 | 将解压出的 `mysql-*` 目录链接到 `{{ basedir }}`（如 `/usr/local/mysql`） |

@@ -26,6 +26,37 @@
         path: "{{ mysql_basedir }}/bin/mysqld"
       register: mysqld_bin
 
+    - name: "[precheck] 探测已安装 MySQL 版本"
+      tags: [precheck]
+      command: "{{ mysql_basedir }}/bin/mysqld --version"
+      register: mysqld_version_out
+      changed_when: false
+      when: mysqld_bin.stat.exists | default(false)
+
+    - name: "[precheck] 解析已安装 major 版本"
+      tags: [precheck]
+      set_fact:
+        mysql_installed_major: "{{ mysqld_version_out.stdout | regex_search('Ver ([0-9]+\\.[0-9]+)', '\\1') | default('') }}"
+      when: mysqld_bin.stat.exists | default(false)
+
+    - name: "[precheck] 无法解析已安装 MySQL 版本"
+      tags: [precheck]
+      fail:
+        msg: "无法解析 {{ mysql_basedir }}/bin/mysqld --version 输出: {{ mysqld_version_out.stdout | default('') }}"
+      when:
+        - mysqld_bin.stat.exists | default(false)
+        - mysql_installed_major | default('') | length == 0
+
+    - name: "[precheck] 已安装 major 版本与 Profile 不一致"
+      tags: [precheck]
+      fail:
+        msg: >-
+          目标主机 {{ mysql_basedir }}/bin/mysqld 已安装 major={{ mysql_installed_major }}，
+          与待部署 Profile major={{ d.profile.major_version }} 不一致，任务终止。
+      when:
+        - mysqld_bin.stat.exists | default(false)
+        - mysql_installed_major | default('') != (d.profile.major_version | default('') | string)
+
     - name: "[precheck] 检查实例数据目录是否已存在"
       tags: [precheck]
       stat:
