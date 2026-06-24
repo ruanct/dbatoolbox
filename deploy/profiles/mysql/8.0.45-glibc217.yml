@@ -1,0 +1,44 @@
+engine: mysql
+profile_code: mysql-8.0.45-glibc217
+display_name: MySQL 8.0.45（glibc2.17 tar.xz）
+major_version: "8.0"
+minor_version: "45"
+status: enabled
+supported_os_rules:
+  - family: centos
+    min_major: 7
+  - family: rhel
+    min_major: 7
+  - family: anolis
+    min_major: 7
+  - family: alinux
+    min_major: 3
+supported_arch:
+  - x86_64
+supported_job_types:
+  - mysql_standalone
+install_method: tar_http
+package_ref: mysql-8.0.45-linux-glibc2.17-x86_64
+media_base_url: "http://10.32.14.211/soft/mysql/tgz/"
+package_filename: "mysql-8.0.45-linux-glibc2.17-x86_64.tar.xz"
+package_glibc_version: "2.17"
+playbook_variant: install_8_0_tgz
+min_memory_gb: 2
+default_params:
+  cmdb:
+    port: 3306
+    charset: utf8mb4
+    topology: standalone
+    role: master
+  install:
+    basedir: "/usr/local/mysql"
+  config:
+    enable_binlog: true
+    enable_gtid: true
+    binlog_format: ROW
+    character_set: utf8mb4
+    collation: utf8mb4_0900_ai_ci
+    innodb_buffer_pool_size: "1G"
+    max_connections: 500
+    default_authentication_plugin: caching_sha2_password
+remark: "介质来自内网 HTTP 软件库；glibc2.17 tar.xz，适用于较老 OS"

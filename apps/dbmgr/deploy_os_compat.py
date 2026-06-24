@@ -1,9 +1,12 @@
 """部署目标主机操作系统与 Profile supported_os_rules 校验。"""
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .services import ServiceError
+
+_OS_MAJOR_VERSION_PATTERN = re.compile(r"(\d+)(?:\.\d+)*")
 
 _DISTRIBUTION_ID_FAMILY_MAP: dict[str, str] = {
     "alinux": "alinux",
@@ -80,13 +83,20 @@ def normalize_host_os_type(os_type_name: str) -> str:
 
 
 def parse_os_major_version(os_version: str) -> int | None:
-    """从 OS 版本字符串解析 major，如 7.9 -> 7。"""
+    """从 OS 版本字符串解析 major，如 7.9、CentOS 7.9 -> 7。"""
     text = (os_version or "").strip()
     if not text:
         return None
     head = text.split(".", 1)[0]
     try:
         return int(head)
+    except ValueError:
+        pass
+    match = _OS_MAJOR_VERSION_PATTERN.search(text)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
     except ValueError:
         return None
 
