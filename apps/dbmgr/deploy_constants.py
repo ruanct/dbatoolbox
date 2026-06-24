@@ -33,6 +33,49 @@ JOB_TYPE_PLAYBOOK_MAP: dict[str, str] = {
 
 MYSQL_BINARY_BASEDIR = "/usr/local/mysql"
 MYSQL_SERVER_ID_MAX = 4294967295
+MYSQL_ROOT_GRANT_HOST = "localhost"
+MYSQL_DBA_ACCOUNT_TYPE = "user_dba"
+MYSQL_ROOT_ACCOUNT_TYPE = "user_adm"
+MYSQL_DBA_GRANT_GROUPS: list[str] = [
+    "SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, RELOAD, PROCESS, REFERENCES, INDEX, ALTER",
+    "SHOW DATABASES, CREATE TEMPORARY TABLES, LOCK TABLES, EXECUTE, REPLICATION SLAVE, REPLICATION CLIENT",
+    "CREATE VIEW, SHOW VIEW, CREATE ROUTINE, ALTER ROUTINE, CREATE USER, EVENT, TRIGGER",
+]
+MYSQL_DBA_GRANT_GROUPS_80_EXTRA: list[str] = [
+    "CREATE ROLE, DROP ROLE",
+]
+
+
+def _parse_major_minor(major_version: str) -> tuple[int, int]:
+    parts = (major_version or "5.7").strip().split(".")
+    try:
+        return int(parts[0]), int(parts[1]) if len(parts) > 1 else 0
+    except (ValueError, IndexError):
+        return 5, 7
+
+
+def build_mysql_dba_global_privileges(major_version: str) -> str:
+    """按 MySQL major 版本生成高级 DBA 账号全局授权列表（可读说明用）。"""
+    groups = list(MYSQL_DBA_GRANT_GROUPS)
+    if _parse_major_minor(major_version) >= (8, 0):
+        groups.extend(MYSQL_DBA_GRANT_GROUPS_80_EXTRA)
+    return ", ".join(groups)
+
+
+def build_mysql_dba_grant_statements(major_version: str) -> list[str]:
+    """生成高级 DBA 账号 GRANT SQL（按权限分组，避免 MySQL 语法歧义）。"""
+    groups = list(MYSQL_DBA_GRANT_GROUPS)
+    if _parse_major_minor(major_version) >= (8, 0):
+        groups.extend(MYSQL_DBA_GRANT_GROUPS_80_EXTRA)
+
+    statements = [
+        f"GRANT {group} ON *.* TO '__DBA_USER__'@'__DBA_HOST__';"
+        for group in groups
+    ]
+    statements.append(
+        "GRANT USAGE ON *.* TO '__DBA_USER__'@'__DBA_HOST__' WITH GRANT OPTION;"
+    )
+    return statements
 
 
 def _coerce_bool(value: Any, *, default: bool = False) -> bool:
@@ -118,3 +161,10 @@ def finalize_mysql_deploy_params(merged: dict[str, Any]) -> None:
                 raise ServiceError(f"server_id 超出有效范围 (1-{MYSQL_SERVER_ID_MAX}): {server_id}")
     else:
         config.pop("server_id", None)
+
+    merged.setdefault("credentials", {})
+    admin_account = merged["credentials"].setdefault("admin_account", {})
+    admin_account["account_type"] = MYSQL_DBA_ACCOUNT_TYPE
+    major_version = str((merged.get("profile") or {}).get("major_version") or "5.7")
+    merged["credentials"]["dba_global_privileges"] = build_mysql_dba_global_privileges(major_version)
+    merged["credentials"]["dba_grant_statements"] = build_mysql_dba_grant_statements(major_version)

@@ -228,7 +228,7 @@ layui.use(['table', 'layer'], function() {
             {field: 'id', title: 'ID', width: 70},
             {field: 'type_display', title: '类型', width: 90},
             {field: 'instance__display', title: '关联实例', width: 160},
-            {field: 'account_type__display', title: '账号类型', width: 100},
+            {field: 'account_type__display', title: '账号类型', width: 120},
             {field: 'full_account_name', title: '账号', width: 180},
             {field: 'account_pswd', title: '密码', width: 160},
             {field: 'default_schema', title: '默认Schema', width: 120},
@@ -297,7 +297,7 @@ layui.use(['table', 'layer'], function() {
             + '<table class="layui-table" style="margin:0;"><tbody>'
             + '<tr>'
                 + '<td style="width:16%;text-align:right;">关联实例</td><td style="width:34%;">' + buildSelect('f-instance', instances, data.instance_id, '请选择实例', 'id', 'instance_name') + '</td>'
-                + '<td style="width:16%;text-align:right;">账号类型</td><td style="width:34%;">' + buildSelect('f-account-type', accountTypes, data.account_type || 'admin', '请选择') + '</td>'
+                + '<td style="width:16%;text-align:right;">账号类型</td><td style="width:34%;">' + buildSelect('f-account-type', accountTypes, data.account_type || 'user_dba', '请选择') + '</td>'
             + '</tr>'
             + '<tr>'
                 + '<td style="text-align:right;">账号名称</td><td><input type="text" id="f-account-name" class="layui-input" value="' + escapeHtmlAttr(data.account_name || '') + '"></td>'

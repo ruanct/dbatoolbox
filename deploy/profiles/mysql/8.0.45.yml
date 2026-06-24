@@ -1,28 +1,29 @@
 engine: mysql
-profile_code: mysql-5.7.44
-display_name: MySQL 5.7.44（glibc2.12 tgz）
-major_version: "5.7"
-minor_version: "44"
+profile_code: mysql-8.0.45
+display_name: MySQL 8.0.45（glibc2.28 tar.xz）
+major_version: "8.0"
+minor_version: "45"
 status: enabled
 supported_os_rules:
   - family: centos
-    min_major: 7
+    min_major: 8
   - family: rhel
-    min_major: 7
+    min_major: 8
   - family: anolis
-    min_major: 7
+    min_major: 8
   - family: alinux
     min_major: 3
+    max_major: 3
 supported_arch:
   - x86_64
 supported_job_types:
   - mysql_standalone
 install_method: tar_http
-package_ref: mysql-5.7.44-linux-glibc2.12-x86_64
+package_ref: mysql-8.0.45-linux-glibc2.28-x86_64
 media_base_url: "http://10.32.14.211/soft/mysql/tgz/"
-package_filename: "mysql-5.7.44-linux-glibc2.12-x86_64.tar.gz"
-package_glibc_version: "2.12"
-playbook_variant: install_5_7_tgz
+package_filename: "mysql-8.0.45-linux-glibc2.28-x86_64.tar.xz"
+package_glibc_version: "2.28"
+playbook_variant: install_8_0_tgz
 min_memory_gb: 2
 default_params:
   cmdb:
@@ -37,8 +38,8 @@ default_params:
     enable_gtid: true
     binlog_format: ROW
     character_set: utf8mb4
-    collation: utf8mb4_unicode_ci
+    collation: utf8mb4_0900_ai_ci
     innodb_buffer_pool_size: "1G"
     max_connections: 500
-    default_authentication_plugin: mysql_native_password
-remark: "介质来自内网 HTTP 软件库"
+    default_authentication_plugin: caching_sha2_password
+remark: "介质来自内网 HTTP 软件库；glibc2.28 tar.xz"

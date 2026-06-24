@@ -31,10 +31,30 @@ def _format_playbook_output(result: dict[str, Any]) -> str:
     lines: list[str] = []
     for play in result.get("plays", []):
         for task in play.get("tasks", []):
+            task_name = (task.get("task") or {}).get("name") or "?"
             hosts = task.get("hosts") or {}
             for host_name, host_result in hosts.items():
-                if host_result.get("failed"):
-                    lines.append(f"[{host_name}] FAILED: {host_result.get('stderr') or host_result.get('msg')}")
+                if host_result.get("failed") or host_result.get("unreachable"):
+                    msg = str(host_result.get("msg") or "")
+                    if msg in {"non-zero return code", "未知错误"} or msg.startswith("non-zero"):
+                        err = (
+                            host_result.get("stderr")
+                            or host_result.get("stdout")
+                            or host_result.get("module_stderr")
+                            or host_result.get("exception")
+                            or msg
+                            or "未知错误"
+                        )
+                    else:
+                        err = (
+                            msg
+                            or host_result.get("stderr")
+                            or host_result.get("module_stderr")
+                            or host_result.get("exception")
+                            or host_result.get("stdout")
+                            or "未知错误"
+                        )
+                    lines.append(f"[{host_name}] FAILED ({task_name}): {err}")
                 elif host_result.get("stdout"):
                     lines.append(f"[{host_name}] {host_result.get('stdout')}")
                 elif host_result.get("msg"):

@@ -7,10 +7,10 @@
 9 个步骤定义于 `apps/dbmgr/deploy_constants.py` 的 `DEPLOY_STEPS`，由 Celery 调用 `MysqlStandaloneExecutor` 顺序执行。
 
 ```
-创建任务 → resolve_deploy_params() 合并参数
+创建任务 → resolve_deploy_params() 合并参数（含 CMDB OS 静态校验）
          → Celery run_db_deploy_job
          → MysqlStandaloneExecutor.run() 逐步执行
-              precheck      → Django Python 预检 + Ansible precheck
+              precheck      → Python 预检 + Ansible precheck（见 §1 顺序）
               prepare~verify  → ansible-playbook --tags <step_code>
               register_cmdb   → Django ORM 写库
 ```
@@ -36,18 +36,37 @@
 
 ## 1. 预检查（precheck）
 
-**执行位置**：`apps/dbmgr/deploy_executors/base.py` → `_run_precheck()` + Ansible `tags: precheck`
+**执行位置**：
 
-| 子项 | 说明 |
-|------|------|
-| Python 预检 | SSH 到目标主机，探测 Python ≥ 3.8，确定 `ansible_python_interpreter` |
-| 程序目录检查 | 检查 `{{ basedir }}/bin/mysqld` 是否存在 |
-| **major 版本校验** | 若 `mysqld` 已存在：执行 `mysqld --version`，解析 major（如 `5.7`），与 `d.profile.major_version` 比对；不一致或无法解析 → **失败** |
-| 数据目录冲突 | 若 `{{ datadir }}/mysql` 已存在 → **失败**（实例已初始化） |
-| 端口占用 | 检测 `{{ port }}` 是否被监听，已占用 → **失败** |
-| 介质可达 | 对安装包 URL 发 HTTP HEAD，非 200/302 → **失败** |
+- 创建任务：`apps/dbmgr/profile_loader.py` → `deploy_os_compat.validate_host_os_against_profile`
+- 步骤执行：`apps/dbmgr/deploy_executors/base.py` → `_run_precheck()` + Ansible `tags: precheck`（`deploy/playbooks/mysql/standalone/site.yml`）
 
-> 若目标机尚未安装 MySQL 程序（`mysqld` 不存在），跳过 major 版本校验，后续由 install 步骤下载安装。
+校验按下列**顺序**执行；任一项失败则任务标记为 `failed`，后续步骤不再执行。
+
+### 1.1 创建任务时（静态，CMDB）
+
+| 顺序 | 子项 | 说明 |
+|------|------|------|
+| 1 | **操作系统静态校验** | 根据主机台账 `os_type` + `os_version` 与 Profile `supported_os_rules` 比对：CentOS≥7、RHEL≥7、Anolis≥7、阿里云 Linux≥3；不满足则**拒绝创建任务** |
+
+> 实现：`apps/dbmgr/deploy_os_compat.py`。不校验 CPU 架构（架构在 Ansible precheck 动态校验）。
+
+### 1.2 precheck 步骤（Executor + Ansible）
+
+| 顺序 | 子项 | 说明 |
+|------|------|------|
+| 2 | **Python 预检** | SSH 到目标主机，探测 Python ≥ 3.8，确定 `ansible_python_interpreter`（`base._run_precheck`） |
+| 3 | **gather_facts** | Ansible 采集目标机 facts（含 `ansible_distribution`、`ansible_architecture` 等） |
+| 4 | **操作系统校验** | 归一化 `ansible_distribution` → family，与 `d.profile.supported_os_rules` 比对 major 版本；要求 CentOS≥7、RHEL≥7、Anolis≥7、阿里云 Linux≥3 |
+| 5 | **CPU 架构校验** | `ansible_architecture` 须在 `d.profile.supported_arch` 内（默认 `x86_64`） |
+| 6 | **程序目录检查** | `stat` 检查 `{{ basedir }}/bin/mysqld` 是否存在，结果记入 `mysqld_bin` |
+| 7 | **major 版本校验** | **仅当 `mysqld` 已存在**：执行 `mysqld --version`，解析 major，与 `d.profile.major_version` 比对；不一致或无法解析 → **失败** |
+| 8 | **数据目录冲突** | 若 `{{ datadir }}/mysql` 已存在 → **失败**（实例已初始化） |
+| 9 | **端口占用** | `wait_for` 检测 `{{ port }}` 未被监听；已占用 → **失败** |
+| 10 | **介质可达** | 对 `d.media.download_url` 发 HTTP HEAD，非 200/302 → **失败** |
+| 11 | **glibc 版本校验** | 探测 OS glibc，与 `d.media.package_glibc_version`（如 `2.12`）比对；OS glibc 须 **≥** 软件包要求，否则失败：**软件包glibc版本高于OS内glibc版本** |
+
+> 若目标机尚未安装 MySQL 程序（`mysqld` 不存在），跳过顺序 7（major 版本校验），后续由 install 步骤下载安装。
 
 ---
 
@@ -140,8 +159,8 @@
 | 子项 | 说明 |
 |------|------|
 | 等待就绪 | `wait_for` 监听端口，最长 120 秒 |
-| 设置 root 密码 | `mysqladmin -uroot password '...'`（无密码 → 设密码） |
-| 创建运维账号 | 若表单填写了运维账号/密码：`CREATE USER ... admin@'%'` + `GRANT ALL ON *.* ... WITH GRANT OPTION` + `FLUSH PRIVILEGES`（默认账号名 `admin`） |
+| 设置 root 密码 | `mysqladmin` 为 `root@localhost` 设置密码 |
+| 创建高级 DBA 账号 | 创建运维账号并授权，分三组 GRANT：①`SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, RELOAD, PROCESS, REFERENCES, INDEX, ALTER` ②`SHOW DATABASES, CREATE TEMPORARY TABLES, LOCK TABLES, EXECUTE, REPLICATION SLAVE, REPLICATION CLIENT` ③`CREATE VIEW, SHOW VIEW, CREATE ROUTINE, ALTER ROUTINE, CREATE USER, EVENT, TRIGGER`（MySQL 8.0+ 另含 `CREATE ROLE, DROP ROLE`），最后 `GRANT USAGE ... WITH GRANT OPTION` |
 
 ---
 
@@ -167,7 +186,7 @@ mysql -uroot -p'...' -S {{ socket }} -Nse "SELECT VERSION();"
 |----------|------|
 | `DatabaseInstance` | 实例名、引擎 mysql、拓扑 standalone、角色 master、状态 online、版本（上步探测）、环境/业务、连接地址/端口、字符集等 |
 | `DatabaseInstanceHost` | 关联目标主机、监听端口、主节点标记 |
-| `DatabaseAccount` | 若填写运维账号：创建默认运维账号（`is_default=True`） |
+| `DatabaseAccount` | `root@localhost`（`user_adm`，超级管理员）；运维账号（`user_dba`，高级DBA用户，`is_default=True`） |
 | `DbDeployJob.instance` | 回写任务与实例关联 |
 
 若已注册则跳过，返回「实例已注册」。
@@ -202,5 +221,6 @@ mysql -uroot -p'...' -S {{ socket }} -Nse "SELECT VERSION();"
 | `apps/dbmgr/deploy_ansible.py` | Ansible 按 tag 执行封装 |
 | `apps/dbmgr/deploy_services.py` | 任务创建、台账注册 |
 | `apps/dbmgr/profile_loader.py` | Profile 合并、`resolved_params` 生成 |
+| `apps/dbmgr/deploy_os_compat.py` | 创建任务 OS 静态校验、OS family 归一化 |
 | `deploy/playbooks/mysql/standalone/site.yml` | 各步骤 Ansible 任务 |
 | `deploy/profiles/mysql/5.7.44.yml` | MySQL 5.7.44 版本档案 |

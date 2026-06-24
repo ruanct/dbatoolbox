@@ -1,6 +1,7 @@
 """Version Profile YAML 加载与参数合并。"""
 from __future__ import annotations
 
+import re
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -46,6 +47,22 @@ def _apply_media_env_override(profile: dict[str, Any]) -> dict[str, Any]:
     return data
 
 
+_PACKAGE_GLIBC_PATTERN = re.compile(r"glibc(\d+\.\d+)", re.IGNORECASE)
+
+
+def extract_package_glibc_version(profile: dict[str, Any]) -> str:
+    """从 Profile 显式字段或包名中解析 glibc 版本，如 glibc2.12 -> 2.12。"""
+    explicit = str(profile.get("package_glibc_version") or "").strip()
+    if explicit:
+        return explicit
+    for key in ("package_ref", "package_filename"):
+        value = str(profile.get(key) or "")
+        match = _PACKAGE_GLIBC_PATTERN.search(value)
+        if match:
+            return match.group(1)
+    return ""
+
+
 def build_media_info(profile: dict[str, Any]) -> dict[str, Any]:
     base_url = (profile.get("media_base_url") or "").rstrip("/")
     subdir = (profile.get("media_subdir") or "").strip("/")
@@ -63,6 +80,7 @@ def build_media_info(profile: dict[str, Any]) -> dict[str, Any]:
         "filename": filename,
         "download_url": download_url,
         "package_ref": profile.get("package_ref", ""),
+        "package_glibc_version": extract_package_glibc_version(profile),
     }
 
 
@@ -184,6 +202,7 @@ def resolve_deploy_params(
     merged["target"]["host_id"] = host_id
     merged["target"]["hostname"] = host.hostname
     merged["target"]["os_type"] = host.os_type.name if host.os_type_id else ""
+    merged["target"]["os_version"] = (host.os_version or "").strip()
     merged.setdefault("cmdb", {})
     if business_ip and not merged["cmdb"].get("connect_host"):
         merged["cmdb"]["connect_host"] = business_ip
@@ -192,8 +211,16 @@ def resolve_deploy_params(
         "display_name": profile.get("display_name", ""),
         "major_version": profile.get("major_version", ""),
         "minor_version": profile.get("minor_version", ""),
+        "supported_os_rules": profile.get("supported_os_rules") or [],
+        "supported_arch": profile.get("supported_arch") or ["x86_64"],
     }
     merged["media"] = build_media_info(profile)
     if engine == "mysql":
+        from .deploy_os_compat import format_supported_os_rules, validate_host_os_against_profile
+
+        merged["profile"]["supported_os_requirement"] = format_supported_os_rules(
+            profile.get("supported_os_rules") or []
+        )
+        validate_host_os_against_profile(host, profile)
         finalize_mysql_deploy_params(merged)
     return merged

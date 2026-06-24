@@ -18,8 +18,74 @@
     mysql_enable_binlog: "{{ d.config.enable_binlog | default(true) | bool }}"
     mysql_enable_gtid: "{{ d.config.enable_gtid | default(true) | bool }}"
     mysql_download_url: "{{ d.media.download_url }}"
+    mysql_package_glibc: "{{ d.media.package_glibc_version | default('') }}"
+    mysql_dba_global_privileges: "{{ d.credentials.dba_global_privileges | default('SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, RELOAD, PROCESS, REFERENCES, INDEX, ALTER, SHOW DATABASES, CREATE TEMPORARY TABLES, LOCK TABLES, EXECUTE, REPLICATION SLAVE, REPLICATION CLIENT, CREATE VIEW, SHOW VIEW, CREATE ROUTINE, ALTER ROUTINE, CREATE USER, EVENT, TRIGGER') }}"
+    mysql_root_password_sql: "{{ d.credentials.root_password | replace(\"'\", \"''\") }}"
+    mysql_admin_name: "{{ (d.credentials.admin_account | default({})).account_name | default('admin') }}"
+    mysql_admin_host: "{{ (d.credentials.admin_account | default({})).grant_host | default('%') }}"
+    mysql_admin_pswd_sql: "{{ ((d.credentials.admin_account | default({})).account_pswd | default('')) | replace(\"'\", \"''\") }}"
+    mysql_client_cnf_path: "/tmp/dbatoolbox_mysql_client_{{ d.cmdb.port | default(3306) }}.cnf"
+    mysql_root_sql_path: "/tmp/dbatoolbox_mysql_root_{{ d.cmdb.port | default(3306) }}.sql"
+    mysql_admin_sql_path: "/tmp/dbatoolbox_mysql_admin_{{ d.cmdb.port | default(3306) }}.sql"
+    mysql_profile_major: "{{ d.profile.major_version | default('5.7') }}"
 
   tasks:
+    - name: "[precheck] 归一化操作系统族"
+      tags: [precheck]
+      set_fact:
+        mysql_os_family: >-
+          {%- set dist_id = (ansible_distribution_id | default('') | lower) -%}
+          {%- set dist = ansible_distribution | lower -%}
+          {%- if dist_id == 'alinux' or dist in ['alibaba cloud linux', 'alibaba', 'alinux', 'aliyun linux', 'aliyun'] -%}
+          alinux
+          {%- elif dist_id == 'anolis' or dist in ['anolis', 'anolis os', 'anolis linux'] -%}
+          anolis
+          {%- elif dist_id == 'centos' or dist == 'centos' -%}
+          centos
+          {%- elif dist_id in ['rhel', 'redhat'] or dist in ['redhat', 'red hat enterprise linux'] -%}
+          rhel
+          {%- else -%}
+          unknown
+          {%- endif -%}
+        mysql_os_major: "{{ ansible_distribution_major_version | string }}"
+
+    - name: "[precheck] 判断操作系统是否在 Profile 支持范围内"
+      tags: [precheck]
+      set_fact:
+        mysql_os_supported: >-
+          {% set ns = namespace(ok=false) -%}
+          {% for rule in d.profile.supported_os_rules | default([]) -%}
+          {% if rule.family == mysql_os_family
+                and mysql_os_major is version(rule.min_major | string, '>=')
+                and (rule.max_major is not defined or mysql_os_major is version(rule.max_major | string, '<=')) -%}
+          {% set ns.ok = true -%}
+          {% endif -%}
+          {% endfor -%}
+          {{ ns.ok | bool }}
+      when: d.profile.supported_os_rules | default([]) | length > 0
+
+    - name: "[precheck] 操作系统不在 Profile 支持范围内"
+      tags: [precheck]
+      fail:
+        msg: >-
+          目标操作系统不在 Profile 支持范围内：
+          distribution={{ ansible_distribution }},
+          distribution_id={{ ansible_distribution_id | default('') }},
+          major={{ mysql_os_major }},
+          family={{ mysql_os_family }}；
+          要求 {{ d.profile.supported_os_requirement | default('见 Profile supported_os_rules') }}。
+      when:
+        - d.profile.supported_os_rules | default([]) | length > 0
+        - not (mysql_os_supported | default(false) | bool)
+
+    - name: "[precheck] CPU 架构不支持"
+      tags: [precheck]
+      fail:
+        msg: >-
+          不支持 CPU 架构 {{ ansible_architecture }}，
+          要求 {{ (d.profile.supported_arch | default(['x86_64'])) | join(', ') }}。
+      when: ansible_architecture not in (d.profile.supported_arch | default(['x86_64']))
+
     - name: "[precheck] 检查 MySQL 程序是否已安装"
       tags: [precheck]
       stat:
@@ -28,7 +94,7 @@
 
     - name: "[precheck] 探测已安装 MySQL 版本"
       tags: [precheck]
-      command: "{{ mysql_basedir }}/bin/mysqld --version"
+      shell: "{{ mysql_basedir }}/bin/mysqld --version 2>&1 | grep -o 'Ver [0-9][0-9]*\\.[0-9][0-9]*' | awk '{print $2}'"
       register: mysqld_version_out
       changed_when: false
       when: mysqld_bin.stat.exists | default(false)
@@ -36,7 +102,7 @@
     - name: "[precheck] 解析已安装 major 版本"
       tags: [precheck]
       set_fact:
-        mysql_installed_major: "{{ mysqld_version_out.stdout | regex_search('Ver ([0-9]+\\.[0-9]+)', '\\1') | default('') }}"
+        mysql_installed_major: "{{ mysqld_version_out.stdout | trim }}"
       when: mysqld_bin.stat.exists | default(false)
 
     - name: "[precheck] 无法解析已安装 MySQL 版本"
@@ -98,6 +164,45 @@
       fail:
         msg: "无法访问安装包: {{ mysql_download_url }}"
       when: media_head.status is not defined or media_head.status not in [200, 302]
+
+    - name: "[precheck] 探测操作系统 glibc 版本"
+      tags: [precheck]
+      shell: |
+        for libc in /lib64/libc.so.6 /lib/x86_64-linux-gnu/libc.so.6; do
+          if [ -x "$libc" ]; then
+            "$libc" 2>&1 | grep -o '[0-9][0-9]*\.[0-9][0-9]*' | tail -1
+            exit 0
+          fi
+        done
+        ldd --version 2>&1 | head -n1 | grep -o '[0-9][0-9]*\.[0-9][0-9]*' | tail -1
+      register: os_glibc_raw
+      changed_when: false
+      when: mysql_package_glibc | length > 0
+
+    - name: "[precheck] 解析操作系统 glibc 版本"
+      tags: [precheck]
+      set_fact:
+        mysql_os_glibc: "{{ os_glibc_raw.stdout | trim }}"
+      when: mysql_package_glibc | length > 0
+
+    - name: "[precheck] 无法解析操作系统 glibc 版本"
+      tags: [precheck]
+      fail:
+        msg: "无法解析目标主机 glibc 版本: {{ os_glibc_raw.stdout | default('') }}"
+      when:
+        - mysql_package_glibc | length > 0
+        - mysql_os_glibc | default('') | length == 0
+
+    - name: "[precheck] 软件包 glibc 版本高于操作系统"
+      tags: [precheck]
+      fail:
+        msg: >-
+          软件包glibc版本高于OS内glibc版本：软件包要求 glibc>={{ mysql_package_glibc }}，
+          操作系统 glibc={{ mysql_os_glibc }}。
+      when:
+        - mysql_package_glibc | length > 0
+        - mysql_os_glibc | default('') | length > 0
+        - not (mysql_os_glibc is version(mysql_package_glibc, '>='))
 
     - name: "[prepare] 创建 mysql 组"
       tags: [prepare]
@@ -207,10 +312,10 @@
           port={{ mysql_port }}
           socket={{ mysql_socket }}
           character-set-server={{ d.config.character_set | default('utf8mb4') }}
-          collation-server={{ d.config.collation | default('utf8mb4_unicode_ci') }}
+          collation-server={{ d.config.collation | default('utf8mb4_0900_ai_ci' if (mysql_profile_major is version('8.0', '>=')) else 'utf8mb4_unicode_ci') }}
           max_connections={{ d.config.max_connections | default(500) }}
           innodb_buffer_pool_size={{ d.config.innodb_buffer_pool_size | default('1G') }}
-          default_authentication_plugin={{ d.config.default_authentication_plugin | default('mysql_native_password') }}
+          default_authentication_plugin={{ d.config.default_authentication_plugin | default('caching_sha2_password' if (mysql_profile_major is version('8.0', '>=')) else 'mysql_native_password') }}
           log-error={{ mysql_log_error }}
           pid-file={{ mysql_datadir }}/mysqld.pid
           symbolic-links=0
@@ -275,32 +380,83 @@
         delay: 3
         timeout: 120
 
+    - name: "[post_config] 生成 root 密码 SQL"
+      tags: [post_config]
+      copy:
+        dest: "{{ mysql_root_sql_path }}"
+        mode: "0600"
+        content: |
+          ALTER USER 'root'@'localhost' IDENTIFIED BY '{{ mysql_root_password_sql }}';
+          FLUSH PRIVILEGES;
+
+    - name: "[post_config] 生成 MySQL 客户端凭据文件"
+      tags: [post_config]
+      copy:
+        dest: "{{ mysql_client_cnf_path }}"
+        mode: "0600"
+        content: |
+          [client]
+          user=root
+          password="{{ d.credentials.root_password | replace('"', '\\"') }}"
+          socket={{ mysql_socket }}
+
     - name: "[post_config] 设置 root 密码"
       tags: [post_config]
-      command: >
-        {{ mysql_basedir }}/bin/mysqladmin
-        -uroot -S {{ mysql_socket }}
-        password '{{ d.credentials.root_password }}'
+      shell: |
+        set -o pipefail
+        MYSQL="{{ mysql_basedir }}/bin/mysql"
+        SOCK="{{ mysql_socket }}"
+        SQL="{{ mysql_root_sql_path }}"
+        CNF="{{ mysql_client_cnf_path }}"
+        if "$MYSQL" -uroot -S "$SOCK" < "$SQL"; then
+          exit 0
+        fi
+        if "$MYSQL" --defaults-extra-file="$CNF" -Nse "SELECT 1" >/dev/null 2>&1; then
+          exit 0
+        fi
+        echo "root 密码设置失败：无法用空密码或目标密码连接 MySQL" >&2
+        exit 1
+      args:
+        executable: /bin/bash
       register: root_pwd
-      failed_when: false
-      changed_when: root_pwd.rc == 0
 
-    - name: "[post_config] 创建运维账号"
+    - name: "[post_config] 生成 DBA 账号 SQL"
       tags: [post_config]
-      command: >
-        {{ mysql_basedir }}/bin/mysql
-        -uroot -p'{{ d.credentials.root_password }}' -S {{ mysql_socket }}
-        -e "CREATE USER IF NOT EXISTS '{{ d.credentials.admin_account.account_name | default('admin') }}'@'{{ d.credentials.admin_account.grant_host | default('%') }}' IDENTIFIED BY '{{ d.credentials.admin_account.account_pswd }}'; GRANT ALL PRIVILEGES ON *.* TO '{{ d.credentials.admin_account.account_name | default('admin') }}'@'{{ d.credentials.admin_account.grant_host | default('%') }}' WITH GRANT OPTION; FLUSH PRIVILEGES;"
-      when: d.credentials.admin_account is defined and d.credentials.admin_account.account_name is defined
+      copy:
+        dest: "{{ mysql_admin_sql_path }}"
+        mode: "0600"
+        content: |
+          CREATE USER IF NOT EXISTS '{{ mysql_admin_name }}'@'{{ mysql_admin_host }}' IDENTIFIED BY '{{ mysql_admin_pswd_sql }}';
+          {% for grant_sql in d.credentials.dba_grant_statements | default([]) %}
+          {{ grant_sql | replace('__DBA_USER__', mysql_admin_name) | replace('__DBA_HOST__', mysql_admin_host) }}
+          {% endfor %}
+          FLUSH PRIVILEGES;
+      when:
+        - d.credentials.admin_account is defined
+        - d.credentials.admin_account.account_name is defined
+        - d.credentials.admin_account.account_pswd is defined
+
+    - name: "[post_config] 创建高级 DBA 运维账号"
+      tags: [post_config]
+      shell: |
+        set -o pipefail
+        {{ mysql_basedir }}/bin/mysql --defaults-extra-file={{ mysql_client_cnf_path | quote }} < {{ mysql_admin_sql_path | quote }}
+      args:
+        executable: /bin/bash
+      when:
+        - d.credentials.admin_account is defined
+        - d.credentials.admin_account.account_name is defined
+        - d.credentials.admin_account.account_pswd is defined
       register: admin_user
-      failed_when: false
+      changed_when: admin_user.rc == 0
 
     - name: "[verify] 探测版本"
       tags: [verify]
-      command: >
-        {{ mysql_basedir }}/bin/mysql
-        -uroot -p'{{ d.credentials.root_password }}' -S {{ mysql_socket }}
-        -Nse "SELECT VERSION();"
+      shell: |
+        set -o pipefail
+        {{ mysql_basedir }}/bin/mysql --defaults-extra-file={{ mysql_client_cnf_path | quote }} -Nse "SELECT VERSION();"
+      args:
+        executable: /bin/bash
       register: mysql_version
       changed_when: false
 

@@ -404,7 +404,15 @@ def delete_instance(obj_id: Any) -> dict[str, Any]:
 # ==================== 部署节点 ====================
 
 ACCOUNT_TYPE_LABELS = dict(DatabaseAccount.ACCOUNT_TYPE_CHOICES)
+VALID_ACCOUNT_TYPES = set(ACCOUNT_TYPE_LABELS.keys())
 GRANT_HOST_PATTERN = re.compile(r"^[A-Za-z0-9_.%-]+$")
+
+
+def _validate_account_type(account_type: str) -> str:
+    value = (account_type or "").strip()
+    if value not in VALID_ACCOUNT_TYPES:
+        raise ServiceError("账号类型无效")
+    return value
 
 
 def _full_account_name(account_name: str, grant_host: str, engine: str) -> str:
@@ -674,9 +682,10 @@ def create_account(body: dict[str, Any]) -> dict[str, Any]:
         raise ServiceError(f"该实例下账号 {identity_label} 已存在")
 
     is_default = bool(body.get("is_default"))
+    account_type = _validate_account_type(body.get("account_type", "user_dba"))
     obj = DatabaseAccount.objects.create(
         instance_id=instance_id,
-        account_type=body.get("account_type", "admin"),
+        account_type=account_type,
         account_name=account_name,
         grant_host=grant_host,
         account_pswd=account_pswd,
@@ -725,7 +734,7 @@ def update_account(body: dict[str, Any]) -> dict[str, Any]:
     is_default = bool(body.get("is_default", obj.is_default))
 
     obj.instance_id = instance_id
-    obj.account_type = body.get("account_type", obj.account_type)
+    obj.account_type = _validate_account_type(body.get("account_type", obj.account_type))
     obj.account_name = account_name
     obj.grant_host = grant_host
     if account_pswd:

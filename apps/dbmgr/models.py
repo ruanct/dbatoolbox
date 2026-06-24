@@ -260,10 +260,15 @@ class DatabaseAccount(models.Model):
     """数据库连接账号"""
 
     ACCOUNT_TYPE_CHOICES = [
-        ("admin", "管理员"),
-        ("readonly", "只读"),
-        ("app", "应用账号"),
-        ("backup", "备份账号"),
+        ("user_adm", "超级管理员"),
+        ("user_dba", "高级DBA用户"),
+        ("user_ops", "日常运维用户"),
+        ("user_app", "业务应用账号"),
+        ("user_read", "只读分析账号"),
+        ("user_repl", "数据复制账号"),
+        ("user_exp", "数据导出账号"),
+        ("user_mon", "系统监控账号"),
+        ("user_bak", "系统备份账号"),
     ]
 
     instance = models.ForeignKey(
@@ -273,7 +278,7 @@ class DatabaseAccount(models.Model):
         verbose_name="关联实例",
     )
     account_type = models.CharField(
-        max_length=16, choices=ACCOUNT_TYPE_CHOICES, default="admin", verbose_name="账号类型",
+        max_length=16, choices=ACCOUNT_TYPE_CHOICES, default="user_dba", verbose_name="账号类型",
     )
     account_name = models.CharField(max_length=128, verbose_name="账号名称")
     grant_host = models.CharField(

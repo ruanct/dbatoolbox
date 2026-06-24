@@ -8,7 +8,14 @@ from django.core.paginator import Paginator
 from django.db import transaction
 from django.utils import timezone
 
-from .deploy_constants import DEPLOY_STEPS, JOB_TYPE_CHOICES, JOB_TYPE_ENGINE_MAP
+from .deploy_constants import (
+    DEPLOY_STEPS,
+    JOB_TYPE_CHOICES,
+    JOB_TYPE_ENGINE_MAP,
+    MYSQL_DBA_ACCOUNT_TYPE,
+    MYSQL_ROOT_ACCOUNT_TYPE,
+    MYSQL_ROOT_GRANT_HOST,
+)
 from .models import DatabaseAccount, DatabaseInstance, DatabaseInstanceHost, DbDeployJob, DbDeployJobStep
 from .profile_loader import list_profiles, resolve_deploy_params
 from .services import ServiceError
@@ -374,10 +381,21 @@ def register_instance_from_job(job: DbDeployJob) -> DatabaseInstance:
         sort_order=1,
     )
     admin = credentials.get("admin_account") or {}
+    if engine == "mysql":
+        root_password = (credentials.get("root_password") or "").strip()
+        if root_password:
+            DatabaseAccount.objects.create(
+                instance=instance,
+                account_type=MYSQL_ROOT_ACCOUNT_TYPE,
+                account_name="root",
+                grant_host=MYSQL_ROOT_GRANT_HOST,
+                account_pswd=root_password,
+                is_default=False,
+            )
     if admin.get("account_name") and admin.get("account_pswd"):
         DatabaseAccount.objects.create(
             instance=instance,
-            account_type=admin.get("account_type", "admin"),
+            account_type=MYSQL_DBA_ACCOUNT_TYPE,
             account_name=admin["account_name"],
             grant_host=(admin.get("grant_host") or "%").strip() if engine == "mysql" else "",
             account_pswd=admin["account_pswd"],
