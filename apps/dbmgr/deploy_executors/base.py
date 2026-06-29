@@ -32,6 +32,9 @@ class BaseDeployExecutor:
         mark_job_running(job, "running")
 
         for step in steps:
+            if step.status == "succeeded":
+                continue
+
             if step.step_code in {"verify"}:
                 job.status = "verifying"
                 job.save(update_fields=["status", "updated_at"])

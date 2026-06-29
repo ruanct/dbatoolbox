@@ -143,6 +143,12 @@ class DatabaseInstance(models.Model):
         help_text="本机IP / VIP / SCAN / Listener / 代理地址",
     )
     port = models.PositiveIntegerField(verbose_name="连接端口")
+    server_id = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        verbose_name="MySQL server_id",
+        help_text="MySQL 复制 server_id，仅 engine=mysql 且开启 binlog 时登记",
+    )
     read_connect_host = models.CharField(
         max_length=128, blank=True, default="", verbose_name="只读连接地址",
         help_text="MySQL Router/ProxySQL 只读入口，可选",
@@ -178,6 +184,7 @@ class DatabaseInstance(models.Model):
             models.Index(fields=["engine", "topology", "status"]),
             models.Index(fields=["environment", "business"]),
             models.Index(fields=["replication_cluster"]),
+            models.Index(fields=["engine", "server_id"], name="dbmgr_db_engine_server_idx"),
         ]
 
     def __str__(self) -> str:

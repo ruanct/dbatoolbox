@@ -5,7 +5,7 @@ import re
 from typing import Any
 
 from django.core.paginator import Paginator
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from .deploy_constants import (
@@ -15,6 +15,8 @@ from .deploy_constants import (
     MYSQL_DBA_ACCOUNT_TYPE,
     MYSQL_ROOT_ACCOUNT_TYPE,
     MYSQL_ROOT_GRANT_HOST,
+    ensure_host_deploy_lock_available,
+    validate_mysql_deploy_connect_host,
 )
 from .models import DatabaseAccount, DatabaseInstance, DatabaseInstanceHost, DbDeployJob, DbDeployJobStep
 from .profile_loader import list_profiles, resolve_deploy_params
@@ -173,8 +175,10 @@ def _validate_create_body(body: dict[str, Any]) -> dict[str, Any]:
         port_num = int(port)
         if port_num < 1024 or port_num > 65535:
             raise ServiceError("MySQL 端口无效")
-        if not (cmdb.get("connect_host") or "").strip():
-            raise ServiceError("请填写 MySQL 连接地址")
+        cmdb["connect_host"] = validate_mysql_deploy_connect_host(
+            int(host_id),
+            str(cmdb.get("connect_host") or ""),
+        )
         config = user_params.setdefault("config", {})
         enable_binlog = config.get("enable_binlog", True)
         enable_gtid = config.get("enable_gtid", True)
@@ -203,6 +207,8 @@ def _validate_create_body(body: dict[str, Any]) -> dict[str, Any]:
 
 
 def create_deploy_job(body: dict[str, Any]) -> dict[str, Any]:
+    from apps.common.models import Host
+
     fields = _validate_create_body(body)
     resolved = resolve_deploy_params(
         job_type=fields["job_type"],
@@ -212,6 +218,8 @@ def create_deploy_job(body: dict[str, Any]) -> dict[str, Any]:
     )
 
     with transaction.atomic():
+        Host.objects.select_for_update().get(id=fields["host_id"])
+        ensure_host_deploy_lock_available(fields["host_id"])
         job = DbDeployJob.objects.create(
             job_type=fields["job_type"],
             status="pending",
@@ -223,6 +231,14 @@ def create_deploy_job(body: dict[str, Any]) -> dict[str, Any]:
             creator=fields["creator"],
             remark=fields["remark"],
         )
+        job.resolved_params = resolve_deploy_params(
+            job_type=fields["job_type"],
+            profile_code=fields["profile_code"],
+            user_params=fields["user_params"],
+            host_id=fields["host_id"],
+            deploy_job_id=job.id,
+        )
+        job.save(update_fields=["resolved_params", "updated_at"])
         for index, (step_code, step_name) in enumerate(DEPLOY_STEPS):
             DbDeployJobStep.objects.create(
                 job=job,
@@ -250,45 +266,204 @@ def _enqueue_deploy_job(job_id: int) -> None:
     run_db_deploy_job.delay(job_id)
 
 
+def _reset_deploy_job_steps(
+    job: DbDeployJob,
+    *,
+    from_sort_order: int | None = None,
+) -> None:
+    """将部署步骤重置为待执行；from_sort_order 为 None 时重置全部步骤。"""
+    steps = job.steps.all()
+    if from_sort_order is not None:
+        steps = steps.filter(sort_order__gte=from_sort_order)
+    steps.update(
+        status="pending",
+        output="",
+        started_at=None,
+        finished_at=None,
+    )
+
+
+def _refresh_job_resolved_params(job: DbDeployJob) -> None:
+    profile_code = (
+        (job.params or {}).get("meta", {}).get("version_profile_code")
+        or (job.resolved_params or {}).get("meta", {}).get("version_profile_code")
+        or ""
+    )
+    if not profile_code:
+        return
+    job.resolved_params = resolve_deploy_params(
+        job_type=job.job_type,
+        profile_code=profile_code,
+        user_params=job.params or {},
+        host_id=job.target_host_id,
+        deploy_job_id=job.id,
+    )
+
+
+def _set_force_rebuild_flag(job: DbDeployJob, *, enabled: bool) -> None:
+    params = dict(job.params or {})
+    meta = dict(params.get("meta") or {})
+    if enabled:
+        meta["force_rebuild"] = True
+    else:
+        meta.pop("force_rebuild", None)
+    params["meta"] = meta
+    job.params = params
+
+
+def _clear_force_rebuild_flag(job: DbDeployJob) -> None:
+    """任务结束后清除 force_rebuild，避免后续「继续执行」误触发清理。"""
+    params = dict(job.params or {})
+    meta = dict(params.get("meta") or {})
+    changed = False
+    if meta.pop("force_rebuild", None) is not None:
+        params["meta"] = meta
+        job.params = params
+        changed = True
+
+    resolved = dict(job.resolved_params or {})
+    rmeta = dict(resolved.get("meta") or {})
+    if rmeta.pop("force_rebuild", None) is not None:
+        resolved["meta"] = rmeta
+        job.resolved_params = resolved
+        changed = True
+
+    if changed:
+        job.save(update_fields=["params", "resolved_params", "updated_at"])
+
+
+def _enqueue_job_as_pending(job: DbDeployJob, *, update_resolved_params: bool) -> None:
+    if update_resolved_params:
+        _refresh_job_resolved_params(job)
+    ensure_host_deploy_lock_available(job.target_host_id, exclude_job_id=job.id)
+    job.status = "pending"
+    job.error_message = ""
+    job.started_at = None
+    job.finished_at = None
+    job.save(update_fields=[
+        "status", "error_message", "started_at", "finished_at",
+        "resolved_params", "params", "updated_at",
+    ])
+
+
 def retry_deploy_job(job_id: int) -> dict[str, Any]:
-    """重新投递 Celery 任务；失败/已取消任务会重置步骤后重试。"""
+    """重新投递 Celery 任务。
+
+    失败任务默认从首个失败步骤续跑（保留已成功步骤）；已取消任务全量重跑。
+    续跑时不刷新 resolved_params，避免与已初始化实例的路径/server_id 不一致。
+    """
     job = _get_deploy_job_or_raise(job_id)
     if job.status in {"running", "prechecking", "verifying"}:
         raise ServiceError("任务执行中，无法重试")
     if job.status == "succeeded":
         raise ServiceError("任务已成功，无需重试")
 
+    resume_from_failed = False
+    skipped_step_count = 0
+    resume_step_name = ""
+
     with transaction.atomic():
-        if job.status in {"failed", "cancelled"}:
-            job.steps.update(
-                status="pending",
-                output="",
-                started_at=None,
-                finished_at=None,
+        if job.status == "cancelled":
+            _reset_deploy_job_steps(job)
+            refresh_resolved_params = True
+        elif job.status == "failed":
+            failed_step = (
+                job.steps.filter(status="failed")
+                .order_by("sort_order", "id")
+                .first()
             )
-        profile_code = (
-            (job.params or {}).get("meta", {}).get("version_profile_code")
-            or (job.resolved_params or {}).get("meta", {}).get("version_profile_code")
-            or ""
-        )
-        if profile_code:
-            job.resolved_params = resolve_deploy_params(
-                job_type=job.job_type,
-                profile_code=profile_code,
-                user_params=job.params or {},
-                host_id=job.target_host_id,
-            )
-        job.status = "pending"
-        job.error_message = ""
-        job.started_at = None
-        job.finished_at = None
-        job.save(update_fields=[
-            "status", "error_message", "started_at", "finished_at",
-            "resolved_params", "updated_at",
-        ])
+            if failed_step:
+                resume_from_failed = True
+                resume_step_name = failed_step.step_name
+                skipped_step_count = job.steps.filter(
+                    status="succeeded",
+                    sort_order__lt=failed_step.sort_order,
+                ).count()
+                _reset_deploy_job_steps(job, from_sort_order=failed_step.sort_order)
+                refresh_resolved_params = False
+            else:
+                _reset_deploy_job_steps(job)
+                refresh_resolved_params = True
+        else:
+            refresh_resolved_params = True
+
+        if refresh_resolved_params:
+            _refresh_job_resolved_params(job)
+
+        _enqueue_job_as_pending(job, update_resolved_params=False)
 
     _enqueue_deploy_job(job.id)
-    return {"code": 0, "msg": "已重新提交执行", "data": {"job_id": job.id}}
+    if resume_from_failed:
+        msg = f"已从失败步骤「{resume_step_name}」继续提交执行"
+        if skipped_step_count:
+            msg += f"（跳过 {skipped_step_count} 个已成功步骤）"
+    else:
+        msg = "已重新提交全量执行"
+    return {
+        "code": 0,
+        "msg": msg,
+        "data": {
+            "job_id": job.id,
+            "resume_from_failed": resume_from_failed,
+            "skipped_step_count": skipped_step_count,
+        },
+    }
+
+
+def release_deploy_job_endpoint(job_id: int) -> dict[str, Any]:
+    """释放失败任务占用的连接端点，便于同端口重新创建部署任务。
+
+    将任务状态置为 cancelled；不删除任务记录与步骤日志。
+    """
+    job = _get_deploy_job_or_raise(job_id)
+    if job.status != "failed":
+        raise ServiceError("仅失败状态的任务可释放端点占用")
+    if job.instance_id:
+        raise ServiceError("任务已注册实例台账，无法释放端点；请先在实例台账中处理")
+
+    job.status = "cancelled"
+    job.finished_at = timezone.now()
+    job.save(update_fields=["status", "finished_at", "updated_at"])
+    return {
+        "code": 0,
+        "msg": "已释放端点占用，同连接地址与端口可重新创建部署任务",
+        "data": {"job_id": job.id, "status": job.status},
+    }
+
+
+def force_rebuild_deploy_job(job_id: int) -> dict[str, Any]:
+    """强制重建：清理目标机本任务实例目录后全量重装。
+
+    仅支持未注册台账的 MySQL 单实例任务；执行结束后自动清除 force_rebuild 标记。
+    """
+    job = _get_deploy_job_or_raise(job_id)
+    if job.status in {"running", "prechecking", "verifying"}:
+        raise ServiceError("任务执行中，无法强制重建")
+    if job.status == "succeeded":
+        raise ServiceError("任务已成功，无需强制重建")
+    if job.job_type != "mysql_standalone":
+        raise ServiceError("当前部署类型不支持强制重建")
+    if job.instance_id:
+        raise ServiceError("任务已注册实例台账，无法强制重建；请先在台账中处理该实例")
+
+    instance_root = ""
+    install = (job.resolved_params or {}).get("install") or {}
+    instance_root = str(install.get("instance_root") or "").strip()
+
+    with transaction.atomic():
+        _reset_deploy_job_steps(job)
+        _set_force_rebuild_flag(job, enabled=True)
+        _enqueue_job_as_pending(job, update_resolved_params=True)
+
+    _enqueue_deploy_job(job.id)
+    msg = "已提交强制重建（将清理实例目录后全量重装）"
+    if instance_root:
+        msg += f"：{instance_root}"
+    return {
+        "code": 0,
+        "msg": msg,
+        "data": {"job_id": job.id, "force_rebuild": True, "instance_root": instance_root},
+    }
 
 
 def cancel_deploy_job(job_id: int) -> dict[str, Any]:
@@ -354,24 +529,35 @@ def register_instance_from_job(job: DbDeployJob) -> DatabaseInstance:
     cmdb = resolved.get("cmdb") or {}
     credentials = resolved.get("credentials") or {}
     engine = resolved.get("meta", {}).get("engine") or JOB_TYPE_ENGINE_MAP.get(job.job_type, "")
+    config = resolved.get("config") or {}
+    server_id_raw = config.get("server_id")
+    server_id = int(server_id_raw) if server_id_raw is not None and engine == "mysql" else None
 
-    instance = DatabaseInstance.objects.create(
-        instance_name=cmdb["instance_name"],
-        engine=engine,
-        topology=cmdb.get("topology", "standalone"),
-        role=cmdb.get("role", "master"),
-        status="online",
-        version=(job.result or {}).get("detected_version", ""),
-        environment_id=job.environment_id,
-        business_id=job.business_id,
-        connect_host=cmdb.get("connect_host", ""),
-        port=int(cmdb.get("port") or 3306),
-        db_name=(cmdb.get("db_name") or "").strip(),
-        charset=(cmdb.get("charset") or "").strip(),
-        sid=(cmdb.get("sid") or "").strip(),
-        service_name=(cmdb.get("service_name") or "").strip(),
-        remark=(cmdb.get("remark") or job.remark or "").strip(),
-    )
+    try:
+        instance = DatabaseInstance.objects.create(
+            instance_name=cmdb["instance_name"],
+            engine=engine,
+            topology=cmdb.get("topology", "standalone"),
+            role=cmdb.get("role", "master"),
+            status="online",
+            version=(job.result or {}).get("detected_version", ""),
+            environment_id=job.environment_id,
+            business_id=job.business_id,
+            connect_host=cmdb.get("connect_host", ""),
+            port=int(cmdb.get("port") or 3306),
+            server_id=server_id,
+            db_name=(cmdb.get("db_name") or "").strip(),
+            charset=(cmdb.get("charset") or "").strip(),
+            sid=(cmdb.get("sid") or "").strip(),
+            service_name=(cmdb.get("service_name") or "").strip(),
+            remark=(cmdb.get("remark") or job.remark or "").strip(),
+        )
+    except IntegrityError as exc:
+        connect_host = (cmdb.get("connect_host") or "").strip()
+        port = int(cmdb.get("port") or 3306)
+        raise ServiceError(
+            f"连接端点 {connect_host}:{port} 已存在，无法注册台账，请检查 CMDB 是否已有相同实例"
+        ) from exc
     DatabaseInstanceHost.objects.create(
         instance=instance,
         host_id=job.target_host_id,
@@ -407,6 +593,7 @@ def register_instance_from_job(job: DbDeployJob) -> DatabaseInstance:
 
 
 def mark_job_running(job: DbDeployJob, status: str) -> None:
+    ensure_host_deploy_lock_available(job.target_host_id, exclude_job_id=job.id)
     job.status = status
     if not job.started_at:
         job.started_at = timezone.now()
@@ -418,6 +605,7 @@ def mark_job_finished(job: DbDeployJob, *, success: bool, error_message: str = "
     job.error_message = error_message[:512]
     job.finished_at = timezone.now()
     job.save(update_fields=["status", "error_message", "finished_at", "updated_at"])
+    _clear_force_rebuild_flag(job)
 
 
 def update_step_status(

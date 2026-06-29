@@ -159,6 +159,7 @@ def resolve_deploy_params(
     profile_code: str,
     user_params: dict[str, Any],
     host_id: int,
+    deploy_job_id: int | None = None,
 ) -> dict[str, Any]:
     from apps.common.models import Host, HostIP
 
@@ -198,6 +199,8 @@ def resolve_deploy_params(
         "engine": engine,
         "playbook_variant": profile.get("playbook_variant", ""),
     })
+    if deploy_job_id is not None:
+        merged["meta"]["deploy_job_id"] = deploy_job_id
     merged.setdefault("target", {})
     merged["target"]["host_id"] = host_id
     merged["target"]["hostname"] = host.hostname

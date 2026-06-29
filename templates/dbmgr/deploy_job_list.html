@@ -99,25 +99,61 @@ function mysqlInstanceRoot(port) {
     return '/data/mysql' + p;
 }
 
-function buildMysqlServerId(connectHost, port) {
-    var p = parseInt(port, 10) || 3306;
-    var host = (connectHost || '').trim();
-    var parts = host.split('.');
-    if (parts.length >= 4) {
-        var third = parseInt(parts[2], 10);
-        var fourth = parseInt(parts[3], 10);
-        if (!isNaN(third) && !isNaN(fourth)) {
-            return parseInt(String(third) + String(fourth) + String(p), 10);
-        }
-    }
-    return p;
+function isMysqlDeployJobType(jobType) {
+    return jobType === 'mysql_standalone';
 }
 
-function mysqlPathPreviewHtml(port, connectHost, enableBinlog, enableGtid) {
+var MYSQL_SERVER_ID_MAX = 4294967295;
+
+function buildMysqlServerIdAsync(connectHost, port) {
+    var host = (connectHost || '').trim();
+    var p = parseInt(port, 10) || 3306;
+    if (!/^(?:(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)$/.test(host)) {
+        return Promise.resolve('-');
+    }
+    if (!window.crypto || !window.crypto.subtle) {
+        return Promise.resolve('-');
+    }
+    return crypto.subtle.digest('SHA-256', new TextEncoder().encode(host + ':' + p)).then(function(buf) {
+        var bytes = new Uint8Array(buf.slice(0, 4));
+        var raw = ((bytes[0] << 24) >>> 0) + (bytes[1] << 16) + (bytes[2] << 8) + bytes[3];
+        return (raw % (MYSQL_SERVER_ID_MAX - 1)) + 1;
+    });
+}
+
+function syncConnectHostFromSelectedHost() {
+    if (!isMysqlDeployJobType($('#f-job-type').val())) {
+        return;
+    }
+    var h = hostById(parseInt($('#f-host').val(), 10));
+    if (h && h.business_ip) {
+        $('#f-connect-host').val(h.business_ip);
+    } else {
+        $('#f-connect-host').val('');
+    }
+    updateMysqlPathPreview();
+}
+
+function applyConnectHostFieldMode(jobType) {
+    var $field = $('#f-connect-host');
+    if (!$field.length) {
+        return;
+    }
+    if (isMysqlDeployJobType(jobType)) {
+        $field.prop('readonly', true).attr(
+            'placeholder',
+            '主机业务 IP（自动填入，用于 server_id）'
+        );
+        syncConnectHostFromSelectedHost();
+    } else {
+        $field.prop('readonly', false).attr('placeholder', '默认取主机业务IP');
+    }
+}
+
+function mysqlPathPreviewHtml(port, connectHost, enableBinlog, enableGtid, serverId) {
     var root = mysqlInstanceRoot(port);
     var binlogOn = !!enableBinlog;
     var gtidOn = binlogOn && !!enableGtid;
-    var serverId = buildMysqlServerId(connectHost, port);
     var logBin = root + '/binlog/mysql-bin';
     var html = '<div style="font-size:12px;color:#666;line-height:1.8;">'
         + '实例目录：<code>' + root + '</code><br>'
@@ -209,14 +245,16 @@ function bindMysqlDeploySwitchEvents() {
 }
 function updateMysqlPathPreview() {
     var $cell = $('#mysql-path-preview-cell');
-    if ($cell.length) {
-        $cell.html(mysqlPathPreviewHtml(
-            $('#f-port').val(),
-            $('#f-connect-host').val(),
-            mysqlDeploySwitchState.binlog,
-            mysqlDeploySwitchState.gtid
-        ));
+    if (!$cell.length) {
+        return;
     }
+    var port = $('#f-port').val();
+    var host = $('#f-connect-host').val();
+    var binlog = mysqlDeploySwitchState.binlog;
+    var gtid = mysqlDeploySwitchState.gtid;
+    buildMysqlServerIdAsync(host, port).then(function(serverId) {
+        $cell.html(mysqlPathPreviewHtml(port, host, binlog, gtid, serverId));
+    });
 }
 
 function buildMysqlPanelRows() {
@@ -227,7 +265,7 @@ function buildMysqlPanelRows() {
             '<input type="checkbox" id="f-enable-gtid" lay-skin="switch" lay-text="开启|关闭" lay-filter="f-enable-gtid" checked>'
         )
         + '<tr><td class="deploy-label">实例参数</td><td class="deploy-field" colspan="3" id="mysql-path-preview-cell">'
-        + mysqlPathPreviewHtml(3306, '', true, true)
+        + mysqlPathPreviewHtml(3306, '', true, true, '-')
         + '</td></tr>'
         + formRow2('root密码', '<input id="f-root-password" type="text" class="layui-input">', '运维账号', '<input id="f-mysql-admin-name" class="layui-input" value="admin">')
         + formRow2('运维密码', '<input id="f-mysql-admin-password" type="text" class="layui-input">', '授权主机', '<input id="f-grant-host" class="layui-input" value="%">')
@@ -253,7 +291,14 @@ function buildCreateFormHtml(defaultJobType, profList) {
         )
         + formRow2('所属环境', buildEnvSelect(''), '所属业务', buildBizSelect(''))
         + formRow2('实例名称', '<input id="f-instance-name" class="layui-input" placeholder="全局唯一">', '目标主机', buildHostSelect(''))
-        + formRow2('连接地址', '<input id="f-connect-host" class="layui-input" placeholder="默认取主机业务IP">', '端口', '<input id="f-port" class="layui-input" value="' + (isOracle ? '1521' : '3306') + '">')
+        + formRow2(
+            '连接地址',
+            '<input id="f-connect-host" class="layui-input"'
+                + (isOracle ? ' placeholder="默认取主机业务IP"' : ' readonly placeholder="主机业务 IP（自动填入，用于 server_id）"')
+                + '>',
+            '端口',
+            '<input id="f-port" class="layui-input" value="' + (isOracle ? '1521' : '3306') + '">'
+        )
         + '</tbody></table>'
         + '<form class="layui-form" id="panel-mysql" lay-filter="deploy-mysql-panel" style="' + (isOracle ? 'display:none;' : '') + '">'
         + '<table class="layui-table deploy-form-table" lay-size="sm"><tbody>'
@@ -290,6 +335,7 @@ function switchDeployPanel(jobType) {
         }
         updateMysqlPathPreview();
     }
+    applyConnectHostFieldMode(jobType);
 }
 
 function bindCreateFormEvents() {
@@ -299,14 +345,19 @@ function bindCreateFormEvents() {
         switchDeployPanel(jt);
     });
     $(document).off('change.deployHost').on('change.deployHost', '#f-host', function() {
+        if (isMysqlDeployJobType($('#f-job-type').val())) {
+            syncConnectHostFromSelectedHost();
+            return;
+        }
         var h = hostById(parseInt($(this).val(), 10));
         if (h && h.business_ip) {
             $('#f-connect-host').val(h.business_ip);
-            updateMysqlPathPreview();
         }
     });
     $(document).off('input.deployConnect change.deployConnect').on('input.deployConnect change.deployConnect', '#f-connect-host', function() {
-        updateMysqlPathPreview();
+        if (!$(this).prop('readonly')) {
+            updateMysqlPathPreview();
+        }
     });
     $(document).off('input.deployPort change.deployPort').on('input.deployPort change.deployPort', '#f-port', function() {
         updateMysqlPathPreview();
@@ -348,6 +399,7 @@ function openCreateForm() {
             resetMysqlDeploySwitchState();
             bindCreateFormEvents();
             renderMysqlSwitches();
+            applyConnectHostFieldMode(defaultJobType);
         },
         end: function() {
             $(document).off('change.deployHost change.deployProfile input.deployPort change.deployPort');
@@ -355,6 +407,13 @@ function openCreateForm() {
         yes: function() {
             var jobType = $('#f-job-type').val();
             var isOracle = jobType === 'oracle_standalone';
+            if (isMysqlDeployJobType(jobType)) {
+                syncConnectHostFromSelectedHost();
+                if (!$('#f-connect-host').val()) {
+                    layer.msg('请先在主机台账维护业务 IP', {icon: 2});
+                    return false;
+                }
+            }
             var remark = isOracle ? $('#f-oracle-remark').val() : $('#f-mysql-remark').val();
             var adminName = isOracle ? $('#f-oracle-admin-name').val() : $('#f-mysql-admin-name').val();
             var adminPassword = isOracle ? $('#f-oracle-admin-password').val() : $('#f-mysql-admin-password').val();

@@ -18,16 +18,25 @@
     mysql_enable_binlog: "{{ d.config.enable_binlog | default(true) | bool }}"
     mysql_enable_gtid: "{{ d.config.enable_gtid | default(true) | bool }}"
     mysql_download_url: "{{ d.media.download_url }}"
+    mysql_package_ref: "{{ d.media.package_ref }}"
+    mysql_package_dir: "{{ mysql_basedir | dirname }}/{{ d.media.package_ref }}"
     mysql_package_glibc: "{{ d.media.package_glibc_version | default('') }}"
     mysql_dba_global_privileges: "{{ d.credentials.dba_global_privileges | default('SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, RELOAD, PROCESS, REFERENCES, INDEX, ALTER, SHOW DATABASES, CREATE TEMPORARY TABLES, LOCK TABLES, EXECUTE, REPLICATION SLAVE, REPLICATION CLIENT, CREATE VIEW, SHOW VIEW, CREATE ROUTINE, ALTER ROUTINE, CREATE USER, EVENT, TRIGGER') }}"
     mysql_root_password_sql: "{{ d.credentials.root_password | replace(\"'\", \"''\") }}"
     mysql_admin_name: "{{ (d.credentials.admin_account | default({})).account_name | default('admin') }}"
     mysql_admin_host: "{{ (d.credentials.admin_account | default({})).grant_host | default('%') }}"
     mysql_admin_pswd_sql: "{{ ((d.credentials.admin_account | default({})).account_pswd | default('')) | replace(\"'\", \"''\") }}"
-    mysql_client_cnf_path: "/tmp/dbatoolbox_mysql_client_{{ d.cmdb.port | default(3306) }}.cnf"
+    mysql_root_client_cnf_path: "{{ mysql_instance_root }}/.root-client.cnf"
     mysql_root_sql_path: "/tmp/dbatoolbox_mysql_root_{{ d.cmdb.port | default(3306) }}.sql"
     mysql_admin_sql_path: "/tmp/dbatoolbox_mysql_admin_{{ d.cmdb.port | default(3306) }}.sql"
+    mysql_legacy_client_cnf_path: "/tmp/dbatoolbox_mysql_client_{{ d.cmdb.port | default(3306) }}.cnf"
     mysql_profile_major: "{{ d.profile.major_version | default('5.7') }}"
+    mysql_profile_minor: "{{ d.profile.minor_version | default('') | string }}"
+    mysql_profile_full_version: "{{ d.profile.major_version | default('5.7') }}.{{ d.profile.minor_version | default('0') }}"
+    mysql_version_grep_pattern: "Ver [0-9]+\\.[0-9]+\\.[0-9]+"
+    mysql_force_rebuild: "{{ d.meta.force_rebuild | default(false) | bool }}"
+    mysql_bootstrap_bind_address: "127.0.0.1"
+    mysql_bind_address: "{{ d.config.bind_address | default('0.0.0.0') }}"
 
   tasks:
     - name: "[precheck] 归一化操作系统族"
@@ -92,36 +101,98 @@
         path: "{{ mysql_basedir }}/bin/mysqld"
       register: mysqld_bin
 
-    - name: "[precheck] 探测已安装 MySQL 版本"
+    - name: "[precheck] 检查 Profile 介质目录是否已解压"
       tags: [precheck]
-      shell: "{{ mysql_basedir }}/bin/mysqld --version 2>&1 | grep -o 'Ver [0-9][0-9]*\\.[0-9][0-9]*' | awk '{print $2}'"
-      register: mysqld_version_out
+      stat:
+        path: "{{ mysql_package_dir }}/bin/mysqld"
+      register: precheck_profile_mysqld
+
+    - name: "[precheck] 探测 basedir MySQL 完整版本"
+      tags: [precheck]
+      shell: >-
+        {{ mysql_basedir }}/bin/mysqld --version 2>&1
+        | grep -oE '{{ mysql_version_grep_pattern }}'
+        | awk '{print $2}'
+      register: mysqld_basedir_version_out
       changed_when: false
       when: mysqld_bin.stat.exists | default(false)
 
-    - name: "[precheck] 解析已安装 major 版本"
+    - name: "[precheck] 探测 Profile 介质目录 MySQL 完整版本"
+      tags: [precheck]
+      shell: >-
+        {{ mysql_package_dir }}/bin/mysqld --version 2>&1
+        | grep -oE '{{ mysql_version_grep_pattern }}'
+        | awk '{print $2}'
+      register: precheck_package_version_out
+      changed_when: false
+      when: precheck_profile_mysqld.stat.exists | default(false)
+
+    - name: "[precheck] 汇总 MySQL 软件版本信息"
       tags: [precheck]
       set_fact:
-        mysql_installed_major: "{{ mysqld_version_out.stdout | trim }}"
-      when: mysqld_bin.stat.exists | default(false)
+        mysql_basedir_full_version: "{{ mysqld_basedir_version_out.stdout | default('') | trim }}"
+        mysql_package_full_version: "{{ precheck_package_version_out.stdout | default('') | trim }}"
 
-    - name: "[precheck] 无法解析已安装 MySQL 版本"
-      tags: [precheck]
-      fail:
-        msg: "无法解析 {{ mysql_basedir }}/bin/mysqld --version 输出: {{ mysqld_version_out.stdout | default('') }}"
-      when:
-        - mysqld_bin.stat.exists | default(false)
-        - mysql_installed_major | default('') | length == 0
-
-    - name: "[precheck] 已安装 major 版本与 Profile 不一致"
+    - name: "[precheck] 无法解析 basedir MySQL 版本"
       tags: [precheck]
       fail:
         msg: >-
-          目标主机 {{ mysql_basedir }}/bin/mysqld 已安装 major={{ mysql_installed_major }}，
-          与待部署 Profile major={{ d.profile.major_version }} 不一致，任务终止。
+          无法解析 {{ mysql_basedir }}/bin/mysqld 完整版本号
+          (要求 {{ mysql_profile_full_version }})：
+          {{ mysqld_basedir_version_out.stdout | default('') }}
       when:
         - mysqld_bin.stat.exists | default(false)
-        - mysql_installed_major | default('') != (d.profile.major_version | default('') | string)
+        - mysql_basedir_full_version | default('') | length == 0
+
+    - name: "[precheck] basedir major 版本与 Profile 不一致"
+      tags: [precheck]
+      fail:
+        msg: >-
+          目标主机 {{ mysql_basedir }}/bin/mysqld 版本={{ mysql_basedir_full_version }}，
+          major 与待部署 Profile major={{ d.profile.major_version }} 不一致，任务终止。
+      when:
+        - mysqld_bin.stat.exists | default(false)
+        - not mysql_basedir_full_version.startswith(d.profile.major_version ~ '.')
+
+    - name: "[precheck] 无法解析 Profile 介质目录 MySQL 版本"
+      tags: [precheck]
+      fail:
+        msg: >-
+          无法解析 {{ mysql_package_dir }}/bin/mysqld 完整版本号
+          (要求 {{ mysql_profile_full_version }})：
+          {{ precheck_package_version_out.stdout | default('') }}
+      when:
+        - not mysqld_bin.stat.exists | default(false)
+        - precheck_profile_mysqld.stat.exists | default(false)
+        - mysql_package_full_version | default('') | length == 0
+
+    - name: "[precheck] Profile 介质目录 major 与档案不一致"
+      tags: [precheck]
+      fail:
+        msg: >-
+          目标主机 {{ mysql_package_dir }}/bin/mysqld 版本={{ mysql_package_full_version }}，
+          major 与待部署 Profile major={{ d.profile.major_version }} 不一致，任务终止。
+      when:
+        - not mysqld_bin.stat.exists | default(false)
+        - precheck_profile_mysqld.stat.exists | default(false)
+        - not mysql_package_full_version.startswith(d.profile.major_version ~ '.')
+
+    - name: "[precheck] 判定软件层场景与是否需要安装"
+      tags: [precheck]
+      set_fact:
+        mysql_software_absent: "{{ not (mysqld_bin.stat.exists | default(false)) }}"
+        mysql_software_minor_ge_profile: >-
+          {{ mysqld_bin.stat.exists | default(false)
+             and (mysql_basedir_full_version is version(mysql_profile_full_version, '>=')) }}
+        mysql_software_need_upgrade: >-
+          {{ mysqld_bin.stat.exists | default(false)
+             and (mysql_basedir_full_version is version(mysql_profile_full_version, '<')) }}
+        mysql_need_software_install: >-
+          {%- if mysqld_bin.stat.exists | default(false) -%}
+          {{ mysql_basedir_full_version is version(mysql_profile_full_version, '<') }}
+          {%- else -%}
+          true
+          {%- endif -%}
 
     - name: "[precheck] 检查实例数据目录是否已存在"
       tags: [precheck]
@@ -133,37 +204,80 @@
       tags: [precheck]
       fail:
         msg: "实例数据目录已存在: {{ mysql_datadir }}"
-      when: mysql_datadir_inited.stat.exists | default(false)
+      when:
+        - mysql_datadir_inited.stat.exists | default(false)
+        - not (mysql_force_rebuild | bool)
 
-    - name: "[precheck] 检查端口占用"
+    - name: "[precheck] 探测端口占用与进程归属"
       tags: [precheck]
-      wait_for:
-        port: "{{ mysql_port }}"
-        state: stopped
-        timeout: 5
-      register: port_check
-      failed_when: false
+      shell: |
+        set -o pipefail
+        PORT="{{ mysql_port }}"
+        SERVICE="{{ mysql_service_name }}"
+        CNF="{{ mysql_cnf_path }}"
+        if ! ss -lntH "sport = :${PORT}" 2>/dev/null | grep -q .; then
+          echo "free"
+          exit 0
+        fi
+        if systemctl is-active --quiet "${SERVICE}" 2>/dev/null; then
+          echo "platform"
+          exit 0
+        fi
+        if ps -ef 2>/dev/null | grep '[m]ysqld' | grep -Fq "${CNF}"; then
+          echo "platform"
+          exit 0
+        fi
+        DETAIL=$(ss -lntpH "sport = :${PORT}" 2>/dev/null | head -n1 | tr -s ' ')
+        echo "foreign|${DETAIL}"
+      args:
+        executable: /bin/bash
+      register: mysql_port_probe_raw
+      changed_when: false
 
-    - name: "[precheck] 端口已被占用"
+    - name: "[precheck] 解析端口占用归属"
+      tags: [precheck]
+      set_fact:
+        mysql_port_owner: "{{ (mysql_port_probe_raw.stdout | trim).split('|')[0] }}"
+        mysql_port_foreign_detail: >-
+          {{ (mysql_port_probe_raw.stdout | trim).split('|')[1] | default('') | trim
+             if '|' in (mysql_port_probe_raw.stdout | trim) else '' }}
+
+    - name: "[precheck] 目标端口被占用（软件已满足或首次安装）"
       tags: [precheck]
       fail:
-        msg: "端口 {{ mysql_port }} 已被占用"
-      when: port_check.failed | default(false)
+        msg: "目标端口被占用, 部署异常终止"
+      when:
+        - mysql_port_owner != 'free'
+        - (mysql_software_minor_ge_profile | default(false) | bool)
+          or (mysql_software_absent | default(false) | bool)
+        - not (mysql_force_rebuild | bool and mysql_port_owner == 'platform')
 
-    - name: "[precheck] 检查介质 URL 可达"
+    - name: "[precheck] 低版本软件升级前目标端口有运行实例"
+      tags: [precheck]
+      fail:
+        msg: "有低minor版号的mysql运行实例正在运行,请先手工处理."
+      when:
+        - mysql_software_need_upgrade | default(false) | bool
+        - mysql_port_owner == 'platform'
+        - not (mysql_force_rebuild | bool)
+
+    - name: "[precheck] 检查介质 URL 可达（目标机）"
       tags: [precheck]
       uri:
         url: "{{ mysql_download_url }}"
         method: HEAD
-        status_code: [200, 302]
+        status_code: [200, 301, 302]
       register: media_head
       failed_when: false
+      when: mysql_need_software_install | default(true) | bool
 
     - name: "[precheck] 介质不可达"
       tags: [precheck]
       fail:
-        msg: "无法访问安装包: {{ mysql_download_url }}"
-      when: media_head.status is not defined or media_head.status not in [200, 302]
+        msg: "目标主机无法访问安装包: {{ mysql_download_url }}"
+      when:
+        - mysql_need_software_install | default(true) | bool
+        - media_head.status is not defined or media_head.status not in [200, 301, 302]
 
     - name: "[precheck] 探测操作系统 glibc 版本"
       tags: [precheck]
@@ -177,19 +291,24 @@
         ldd --version 2>&1 | head -n1 | grep -o '[0-9][0-9]*\.[0-9][0-9]*' | tail -1
       register: os_glibc_raw
       changed_when: false
-      when: mysql_package_glibc | length > 0
+      when:
+        - mysql_need_software_install | default(true) | bool
+        - mysql_package_glibc | length > 0
 
     - name: "[precheck] 解析操作系统 glibc 版本"
       tags: [precheck]
       set_fact:
         mysql_os_glibc: "{{ os_glibc_raw.stdout | trim }}"
-      when: mysql_package_glibc | length > 0
+      when:
+        - mysql_need_software_install | default(true) | bool
+        - mysql_package_glibc | length > 0
 
     - name: "[precheck] 无法解析操作系统 glibc 版本"
       tags: [precheck]
       fail:
         msg: "无法解析目标主机 glibc 版本: {{ os_glibc_raw.stdout | default('') }}"
       when:
+        - mysql_need_software_install | default(true) | bool
         - mysql_package_glibc | length > 0
         - mysql_os_glibc | default('') | length == 0
 
@@ -200,9 +319,92 @@
           软件包glibc版本高于OS内glibc版本：软件包要求 glibc>={{ mysql_package_glibc }}，
           操作系统 glibc={{ mysql_os_glibc }}。
       when:
+        - mysql_need_software_install | default(true) | bool
         - mysql_package_glibc | length > 0
         - mysql_os_glibc | default('') | length > 0
         - not (mysql_os_glibc is version(mysql_package_glibc, '>='))
+
+    - name: "[prepare] force_rebuild 停止本实例 systemd 服务"
+      tags: [prepare]
+      systemd:
+        name: "{{ mysql_service_name }}"
+        state: stopped
+        enabled: false
+        daemon_reload: true
+      failed_when: false
+      when: mysql_force_rebuild | bool
+
+    - name: "[prepare] force_rebuild 移除 systemd 单元文件"
+      tags: [prepare]
+      file:
+        path: "/etc/systemd/system/{{ mysql_service_name }}.service"
+        state: absent
+      when: mysql_force_rebuild | bool
+
+    - name: "[prepare] force_rebuild 清理实例目录"
+      tags: [prepare]
+      file:
+        path: "{{ mysql_instance_root }}"
+        state: absent
+      when: mysql_force_rebuild | bool
+
+    - name: "[prepare] force_rebuild 清理临时凭据文件"
+      tags: [prepare]
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ mysql_legacy_client_cnf_path }}"
+        - "{{ mysql_root_sql_path }}"
+        - "{{ mysql_admin_sql_path }}"
+      when: mysql_force_rebuild | bool
+
+    - name: "[prepare] 检查 Profile 介质目录是否就绪"
+      tags: [prepare]
+      stat:
+        path: "{{ mysql_package_dir }}/bin/mysqld"
+      register: prepare_profile_mysqld
+
+    - name: "[prepare] 检查 basedir MySQL 程序是否已安装"
+      tags: [prepare]
+      stat:
+        path: "{{ mysql_basedir }}/bin/mysqld"
+      register: prepare_mysqld_bin
+
+    - name: "[prepare] 探测 basedir MySQL 完整版本"
+      tags: [prepare]
+      shell: >-
+        {{ mysql_basedir }}/bin/mysqld --version 2>&1
+        | grep -oE '{{ mysql_version_grep_pattern }}'
+        | awk '{print $2}'
+      register: prepare_basedir_version_out
+      changed_when: false
+      when: prepare_mysqld_bin.stat.exists | default(false)
+
+    - name: "[prepare] 重算是否需要安装或升级 MySQL 软件"
+      tags: [prepare]
+      set_fact:
+        mysql_need_software_install: >-
+          {%- if prepare_mysqld_bin.stat.exists | default(false) -%}
+          {{ (prepare_basedir_version_out.stdout | default('') | trim) is version(mysql_profile_full_version, '<') }}
+          {%- else -%}
+          true
+          {%- endif -%}
+
+    - name: "[prepare] 判定 prepare 阶段是否需要下载安装包"
+      tags: [prepare]
+      set_fact:
+        mysql_prepare_need_download: >-
+          {{ (mysql_need_software_install | bool)
+             and not (prepare_profile_mysqld.stat.exists | default(false)) }}
+
+    - name: "[prepare] 验证目标机可访问安装介质"
+      tags: [prepare]
+      uri:
+        url: "{{ mysql_download_url }}"
+        method: HEAD
+        status_code: [200, 301, 302]
+      when: mysql_prepare_need_download | default(false) | bool
 
     - name: "[prepare] 创建 mysql 组"
       tags: [prepare]
@@ -248,6 +450,71 @@
         path: "{{ mysql_basedir }}/bin/mysqld"
       register: mysqld_bin
 
+    - name: "[install] 检查 Profile 介质目录"
+      tags: [install]
+      stat:
+        path: "{{ mysql_package_dir }}/bin/mysqld"
+      register: mysqld_profile_pkg
+
+    - name: "[install] 探测 basedir MySQL 完整版本"
+      tags: [install]
+      shell: >-
+        {{ mysql_basedir }}/bin/mysqld --version 2>&1
+        | grep -oE '{{ mysql_version_grep_pattern }}'
+        | awk '{print $2}'
+      register: install_basedir_version_out
+      changed_when: false
+      when: mysqld_bin.stat.exists | default(false)
+
+    - name: "[install] 判定是否需要安装或升级 MySQL 软件"
+      tags: [install]
+      set_fact:
+        mysql_basedir_full_version: "{{ install_basedir_version_out.stdout | default('') | trim }}"
+        mysql_need_software_install: >-
+          {%- if mysqld_bin.stat.exists | default(false) -%}
+          {{ (install_basedir_version_out.stdout | default('') | trim) is version(mysql_profile_full_version, '<') }}
+          {%- else -%}
+          true
+          {%- endif -%}
+
+    - name: "[install] 探测目标端口运行实例（软件升级前）"
+      tags: [install]
+      shell: |
+        set -o pipefail
+        PORT="{{ mysql_port }}"
+        SERVICE="{{ mysql_service_name }}"
+        CNF="{{ mysql_cnf_path }}"
+        if ! ss -lntH "sport = :${PORT}" 2>/dev/null | grep -q .; then
+          echo "free"
+          exit 0
+        fi
+        if systemctl is-active --quiet "${SERVICE}" 2>/dev/null; then
+          echo "platform"
+          exit 0
+        fi
+        if ps -ef 2>/dev/null | grep '[m]ysqld' | grep -Fq "${CNF}"; then
+          echo "platform"
+          exit 0
+        fi
+        echo "foreign"
+      args:
+        executable: /bin/bash
+      register: install_port_probe_raw
+      changed_when: false
+      when:
+        - mysql_need_software_install | default(true) | bool
+        - mysqld_bin.stat.exists | default(false)
+
+    - name: "[install] 低版本软件升级前目标端口有运行实例"
+      tags: [install]
+      fail:
+        msg: "有低minor版号的mysql运行实例正在运行,请先手工处理."
+      when:
+        - mysql_need_software_install | default(true) | bool
+        - mysqld_bin.stat.exists | default(false)
+        - (install_port_probe_raw.stdout | default('') | trim) == 'platform'
+        - not (mysql_force_rebuild | bool)
+
     - name: "[install] 下载 MySQL 安装包"
       tags: [install]
       get_url:
@@ -255,7 +522,9 @@
         dest: "/tmp/{{ d.media.filename }}"
         mode: "0644"
       register: mysql_pkg
-      when: not mysqld_bin.stat.exists | default(false)
+      when:
+        - mysql_need_software_install | default(true) | bool
+        - not mysqld_profile_pkg.stat.exists | default(false)
 
     - name: "[install] 解压安装包"
       tags: [install]
@@ -263,40 +532,63 @@
         src: "/tmp/{{ d.media.filename }}"
         dest: "{{ mysql_basedir | dirname }}"
         remote_src: true
-        creates: "{{ mysql_basedir }}/bin/mysqld"
+        creates: "{{ mysql_package_dir }}/bin/mysqld"
       register: unarchive_result
-      when: not mysqld_bin.stat.exists | default(false)
+      when:
+        - mysql_need_software_install | default(true) | bool
+        - not mysqld_profile_pkg.stat.exists | default(false)
 
-    - name: "[install] 查找解压目录"
+    - name: "[install] 刷新 Profile 介质目录状态"
       tags: [install]
-      find:
-        paths: "{{ mysql_basedir | dirname }}"
-        patterns: "mysql-*"
-        file_type: directory
-        depth: 1
-      register: mysql_dirs
-      when: not mysqld_bin.stat.exists | default(false)
+      stat:
+        path: "{{ mysql_package_dir }}/bin/mysqld"
+      register: mysqld_profile_pkg_ready
+      when: mysql_need_software_install | default(true) | bool
+
+    - name: "[install] Profile 介质目录缺失"
+      tags: [install]
+      fail:
+        msg: >-
+          无法找到 Profile {{ d.profile.profile_code }} 对应介质目录 {{ mysql_package_dir }}，
+          请检查安装包是否下载/解压成功。
+      when:
+        - mysql_need_software_install | default(true) | bool
+        - not mysqld_profile_pkg_ready.stat.exists | default(false)
 
     - name: "[install] 建立 basedir 软链接"
       tags: [install]
       file:
-        src: "{{ (mysql_dirs.files | sort(attribute='path') | last).path }}"
+        src: "{{ mysql_package_dir }}"
         dest: "{{ mysql_basedir }}"
         state: link
-      when:
-        - not mysqld_bin.stat.exists | default(false)
-        - mysql_dirs.matched | default(0) > 0
+        force: true
+      when: mysql_need_software_install | default(true) | bool
 
     - name: "[install] 设置程序目录权限"
       tags: [install]
       file:
-        path: "{{ mysql_basedir }}"
+        path: "{{ mysql_package_dir }}"
         state: directory
         owner: mysql
         group: mysql
         recurse: true
-        follow: true
-      when: not mysqld_bin.stat.exists | default(false)
+      when: mysql_need_software_install | default(true) | bool
+
+    - name: "[install] 确认 MySQL 程序已就绪"
+      tags: [install]
+      stat:
+        path: "{{ mysql_basedir }}/bin/mysqld"
+      register: mysqld_bin_ready
+
+    - name: "[install] 将 MySQL bin 目录加入系统 PATH（/etc/profile）"
+      tags: [install]
+      blockinfile:
+        path: /etc/profile
+        marker: "# {mark} DBATOOLBOX MANAGED MYSQL PATH"
+        block: |
+          export PATH={{ mysql_basedir }}/bin:$PATH
+        create: false
+      when: mysqld_bin_ready.stat.exists | default(false)
 
     - name: "[configure] 部署 my.cnf"
       tags: [configure]
@@ -311,6 +603,7 @@
           datadir={{ mysql_datadir }}
           port={{ mysql_port }}
           socket={{ mysql_socket }}
+          bind-address={{ mysql_bootstrap_bind_address }}
           character-set-server={{ d.config.character_set | default('utf8mb4') }}
           collation-server={{ d.config.collation | default('utf8mb4_0900_ai_ci' if (mysql_profile_major is version('8.0', '>=')) else 'utf8mb4_unicode_ci') }}
           max_connections={{ d.config.max_connections | default(500) }}
@@ -346,6 +639,18 @@
       args:
         creates: "{{ mysql_datadir }}/mysql"
 
+    - name: "[start] 部署引导期 root 客户端凭据文件"
+      tags: [start]
+      copy:
+        dest: "{{ mysql_root_client_cnf_path }}"
+        owner: mysql
+        group: mysql
+        mode: "0600"
+        content: |
+          [client]
+          user=root
+          socket={{ mysql_socket }}
+
     - name: "[start] 部署 systemd 服务"
       tags: [start]
       copy:
@@ -360,7 +665,7 @@
           User=mysql
           Group=mysql
           ExecStart={{ mysql_basedir }}/bin/mysqld --defaults-file={{ mysql_cnf_path }} --daemonize --pid-file={{ mysql_datadir }}/mysqld.pid
-          ExecStop={{ mysql_basedir }}/bin/mysqladmin -uroot -p'{{ d.credentials.root_password }}' -S {{ mysql_socket }} shutdown
+          ExecStop={{ mysql_basedir }}/bin/mysqladmin --defaults-extra-file={{ mysql_root_client_cnf_path }} shutdown
           Restart=on-failure
           [Install]
           WantedBy=multi-user.target
@@ -389,17 +694,6 @@
           ALTER USER 'root'@'localhost' IDENTIFIED BY '{{ mysql_root_password_sql }}';
           FLUSH PRIVILEGES;
 
-    - name: "[post_config] 生成 MySQL 客户端凭据文件"
-      tags: [post_config]
-      copy:
-        dest: "{{ mysql_client_cnf_path }}"
-        mode: "0600"
-        content: |
-          [client]
-          user=root
-          password="{{ d.credentials.root_password | replace('"', '\\"') }}"
-          socket={{ mysql_socket }}
-
     - name: "[post_config] 设置 root 密码"
       tags: [post_config]
       shell: |
@@ -407,18 +701,36 @@
         MYSQL="{{ mysql_basedir }}/bin/mysql"
         SOCK="{{ mysql_socket }}"
         SQL="{{ mysql_root_sql_path }}"
-        CNF="{{ mysql_client_cnf_path }}"
+        CNF="{{ mysql_root_client_cnf_path }}"
         if "$MYSQL" -uroot -S "$SOCK" < "$SQL"; then
           exit 0
         fi
         if "$MYSQL" --defaults-extra-file="$CNF" -Nse "SELECT 1" >/dev/null 2>&1; then
           exit 0
         fi
+        if MYSQL_PWD="$MYSQL_ROOT_PASSWORD" "$MYSQL" -uroot -S "$SOCK" -Nse "SELECT 1" >/dev/null 2>&1; then
+          exit 0
+        fi
         echo "root 密码设置失败：无法用空密码或目标密码连接 MySQL" >&2
         exit 1
       args:
         executable: /bin/bash
+      environment:
+        MYSQL_ROOT_PASSWORD: "{{ d.credentials.root_password }}"
       register: root_pwd
+
+    - name: "[post_config] 部署 root 客户端凭据文件"
+      tags: [post_config]
+      copy:
+        dest: "{{ mysql_root_client_cnf_path }}"
+        owner: mysql
+        group: mysql
+        mode: "0600"
+        content: |
+          [client]
+          user=root
+          password="{{ d.credentials.root_password | replace('"', '\\"') }}"
+          socket={{ mysql_socket }}
 
     - name: "[post_config] 生成 DBA 账号 SQL"
       tags: [post_config]
@@ -440,7 +752,7 @@
       tags: [post_config]
       shell: |
         set -o pipefail
-        {{ mysql_basedir }}/bin/mysql --defaults-extra-file={{ mysql_client_cnf_path | quote }} < {{ mysql_admin_sql_path | quote }}
+        {{ mysql_basedir }}/bin/mysql --defaults-extra-file={{ mysql_root_client_cnf_path | quote }} < {{ mysql_admin_sql_path | quote }}
       args:
         executable: /bin/bash
       when:
@@ -450,15 +762,65 @@
       register: admin_user
       changed_when: admin_user.rc == 0
 
+    - name: "[post_config] 放开 bind-address 对外监听"
+      tags: [post_config]
+      replace:
+        path: "{{ mysql_cnf_path }}"
+        regexp: '^bind-address\s*=.*'
+        replace: "bind-address={{ mysql_bind_address }}"
+      register: mysql_bind_updated
+
+    - name: "[post_config] 重启 MySQL 以应用对外监听"
+      tags: [post_config]
+      systemd:
+        name: "{{ mysql_service_name }}"
+        state: restarted
+        daemon_reload: true
+      when: mysql_bind_updated.changed | default(false)
+
+    - name: "[post_config] 等待对外监听就绪"
+      tags: [post_config]
+      wait_for:
+        port: "{{ mysql_port }}"
+        delay: 2
+        timeout: 120
+      when: mysql_bind_updated.changed | default(false)
+
+    - name: "[post_config] 清理临时 SQL 与历史凭据文件"
+      tags: [post_config]
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ mysql_root_sql_path }}"
+        - "{{ mysql_admin_sql_path }}"
+        - "{{ mysql_legacy_client_cnf_path }}"
+
     - name: "[verify] 探测版本"
       tags: [verify]
       shell: |
         set -o pipefail
-        {{ mysql_basedir }}/bin/mysql --defaults-extra-file={{ mysql_client_cnf_path | quote }} -Nse "SELECT VERSION();"
+        {{ mysql_basedir }}/bin/mysql --defaults-extra-file={{ mysql_root_client_cnf_path | quote }} -Nse "SELECT VERSION();"
       args:
         executable: /bin/bash
       register: mysql_version
       changed_when: false
+
+    - name: "[verify] 部署版本低于 Profile 要求"
+      tags: [verify]
+      fail:
+        msg: >-
+          运行版本 {{ mysql_version.stdout | trim }} 低于 Profile {{ d.profile.profile_code }}
+          要求 {{ mysql_profile_full_version }}，任务终止。
+      when: (mysql_version.stdout | trim) is version(mysql_profile_full_version, '<')
+
+    - name: "[verify] 部署版本 major 与 Profile 不一致"
+      tags: [verify]
+      fail:
+        msg: >-
+          运行版本 {{ mysql_version.stdout | trim }} 与 Profile {{ d.profile.profile_code }}
+          major={{ d.profile.major_version }} 不一致，任务终止。
+      when: not (mysql_version.stdout | trim).startswith(d.profile.major_version ~ '.')
 
     - name: "[verify] 输出版本"
       tags: [verify]

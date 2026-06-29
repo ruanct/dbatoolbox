@@ -11,10 +11,12 @@ from .deploy_services import (
     cancel_deploy_job,
     create_deploy_job,
     delete_deploy_job,
+    force_rebuild_deploy_job,
     get_deploy_form_options,
     get_deploy_job_detail,
     list_deploy_jobs,
     list_deploy_profiles,
+    release_deploy_job_endpoint,
     retry_deploy_job,
 )
 from .services import (
@@ -286,6 +288,10 @@ def deploy_job_detail_api_view(request, job_id: int):
     action = (body.get("action") or "").strip()
     if action == "retry":
         return _json_service(retry_deploy_job, job_id)
+    if action == "force_rebuild":
+        return _json_service(force_rebuild_deploy_job, job_id)
+    if action == "release_endpoint":
+        return _json_service(release_deploy_job_endpoint, job_id)
     if action == "cancel":
         return _json_service(cancel_deploy_job, job_id)
     return JsonResponse({"code": 1, "msg": "不支持的操作"}, status=400)

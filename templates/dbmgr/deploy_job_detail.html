@@ -39,6 +39,8 @@
         <button class="layui-btn layui-btn-xs layui-btn-primary" style="float:right;margin-top:8px;" id="btn-back">返回列表</button>
         <button class="layui-btn layui-btn-xs layui-btn-danger" style="float:right;margin-top:8px;margin-right:8px;display:none;" id="btn-delete">删除</button>
         <button class="layui-btn layui-btn-xs layui-btn-warm" style="float:right;margin-top:8px;margin-right:8px;display:none;" id="btn-cancel">取消</button>
+        <button class="layui-btn layui-btn-xs layui-btn-danger" style="float:right;margin-top:8px;margin-right:8px;display:none;" id="btn-force-rebuild">强制重建</button>
+        <button class="layui-btn layui-btn-xs layui-btn-warm" style="float:right;margin-top:8px;margin-right:8px;display:none;" id="btn-release-endpoint">释放端点</button>
         <button class="layui-btn layui-btn-xs layui-btn-normal" style="float:right;margin-top:8px;margin-right:8px;display:none;" id="btn-retry">重新执行</button>
         <button class="layui-btn layui-btn-xs" style="float:right;margin-top:8px;margin-right:8px;" id="btn-refresh">刷新</button>
     </div>
@@ -79,6 +81,7 @@
 var jobId = {{ job_id }};
 var pollTimer = null;
 var currentStatus = '';
+var lastJobData = null;
 
 function getCookie(name) {
     var r = document.cookie.match("\\b" + name + "=([^;]*)\\b");
@@ -110,9 +113,65 @@ function postJobAction(action, confirmText, onSuccess) {
     });
 }
 
-function updateActionButtons(status) {
+function countSucceededSteps(steps) {
+    var count = 0;
+    for (var i = 0; i < steps.length; i++) {
+        if (steps[i].status === 'succeeded') {
+            count++;
+        }
+    }
+    return count;
+}
+
+function findFirstFailedStep(steps) {
+    for (var i = 0; i < steps.length; i++) {
+        if (steps[i].status === 'failed') {
+            return steps[i];
+        }
+    }
+    return null;
+}
+
+function buildRetryConfirmText(data) {
+    if (!data || data.status !== 'failed') {
+        return '确定重新执行该部署任务吗？';
+    }
+    var steps = data.steps || [];
+    var failedStep = findFirstFailedStep(steps);
+    var succeededCount = countSucceededSteps(steps);
+    if (failedStep && succeededCount > 0) {
+        return '将从失败步骤「' + failedStep.step_name + '」继续执行，'
+            + '已成功完成的 ' + succeededCount + ' 个步骤将自动跳过（不会重新预检查或初始化）。确定继续吗？';
+    }
+    return '确定重新执行该部署任务吗？';
+}
+
+function buildForceRebuildConfirmText(data) {
+    var root = '-';
+    if (data && data.resolved_params && data.resolved_params.install) {
+        root = data.resolved_params.install.instance_root || root;
+    }
+    return '将停止本任务实例服务并删除目录「' + root + '」，然后从头全量重装。'
+        + '此操作不可恢复，确定继续吗？';
+}
+
+function updateActionButtons(status, steps, data) {
     currentStatus = status;
-    $('#btn-retry').toggle(status === 'pending' || status === 'failed' || status === 'cancelled');
+    steps = steps || [];
+    data = data || null;
+    var showRetry = status === 'pending' || status === 'failed' || status === 'cancelled';
+    var failedStep = status === 'failed' ? findFirstFailedStep(steps) : null;
+    var succeededCount = countSucceededSteps(steps);
+    var retryLabel = (failedStep && succeededCount > 0) ? '继续执行' : '重新执行';
+    $('#btn-retry').text(retryLabel).toggle(showRetry);
+    var showForceRebuild = showRetry
+        && data
+        && data.job_type === 'mysql_standalone'
+        && !data.instance_id
+        && (status === 'failed' || status === 'cancelled');
+    $('#btn-force-rebuild').toggle(showForceRebuild);
+    var showReleaseEndpoint = status === 'failed' && !data.instance_id;
+    $('#btn-release-endpoint').toggle(showReleaseEndpoint);
     $('#btn-cancel').toggle(status === 'pending');
     $('#btn-delete').toggle(
         status === 'pending' || status === 'failed' || status === 'cancelled'
@@ -127,6 +186,7 @@ function statusColor(status) {
 }
 
 function renderJob(data) {
+    lastJobData = data;
     var rows = [
         ['任务ID', data.id],
         ['部署类型', data.job_type__display],
@@ -178,7 +238,7 @@ function renderJob(data) {
             + '</tr>';
     }
     $('#step-table tbody').html(stepHtml);
-    updateActionButtons(data.status);
+    updateActionButtons(data.status, steps, data);
 
     var running = ['pending', 'prechecking', 'running', 'verifying'].indexOf(data.status) >= 0;
     if (running && !pollTimer) {
@@ -201,7 +261,17 @@ function loadDetail() {
 $('#btn-refresh').on('click', loadDetail);
 $('#btn-back').on('click', function() { window.location.href = '/db-deploy/'; });
 $('#btn-retry').on('click', function() {
-    postJobAction('retry', '确定重新执行该部署任务吗？');
+    postJobAction('retry', buildRetryConfirmText(lastJobData));
+});
+$('#btn-force-rebuild').on('click', function() {
+    postJobAction('force_rebuild', buildForceRebuildConfirmText(lastJobData));
+});
+$('#btn-release-endpoint').on('click', function() {
+    postJobAction(
+        'release_endpoint',
+        '将把任务标记为「已取消」并释放其占用的连接端点（同 IP:端口 可重新创建任务）。'
+            + '任务记录与步骤日志保留。确定继续吗？'
+    );
 });
 $('#btn-cancel').on('click', function() {
     postJobAction('cancel', '确定取消该待执行任务吗？');
