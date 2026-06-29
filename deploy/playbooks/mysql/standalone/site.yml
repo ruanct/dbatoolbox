@@ -252,6 +252,26 @@
           or (mysql_software_absent | default(false) | bool)
         - not (mysql_force_rebuild | bool and mysql_port_owner == 'platform')
 
+    - name: "[precheck] 低版本软件升级前枚举同机运行中的 MySQL 实例服务"
+      tags: [precheck]
+      shell: |
+        set -o pipefail
+        systemctl list-units 'mysqld*.service' --state=running --plain --no-legend 2>/dev/null \
+          | awk '{print $1}' || true
+      args:
+        executable: /bin/bash
+      register: mysql_running_units_raw
+      changed_when: false
+      when: mysql_software_need_upgrade | default(false) | bool
+
+    - name: "[precheck] 解析同机运行中的 MySQL 实例服务"
+      tags: [precheck]
+      set_fact:
+        mysql_running_units: >-
+          {{ mysql_running_units_raw.stdout_lines | default([])
+             | map('trim') | select('length') | list }}
+      when: mysql_software_need_upgrade | default(false) | bool
+
     - name: "[precheck] 低版本软件升级前目标端口有运行实例"
       tags: [precheck]
       fail:
@@ -260,6 +280,21 @@
         - mysql_software_need_upgrade | default(false) | bool
         - mysql_port_owner == 'platform'
         - not (mysql_force_rebuild | bool)
+
+    - name: "[precheck] 低版本软件升级前须停止同机所有 MySQL 实例"
+      tags: [precheck]
+      fail:
+        msg: >-
+          升级共享 MySQL 软件前须先停止同机所有运行中的 MySQL 实例：
+          {{ mysql_upgrade_blocking_units | join(', ') }}。
+          共享程序目录 {{ mysql_basedir }} 变更会影响全部实例。
+      vars:
+        mysql_upgrade_blocking_units: >-
+          {{ mysql_running_units | reject('equalto', mysql_service_name ~ '.service') | list
+             if mysql_force_rebuild | bool else mysql_running_units }}
+      when:
+        - mysql_software_need_upgrade | default(false) | bool
+        - mysql_upgrade_blocking_units | default([]) | length > 0
 
     - name: "[precheck] 检查介质 URL 可达（目标机）"
       tags: [precheck]
@@ -477,30 +512,26 @@
           true
           {%- endif -%}
 
-    - name: "[install] 探测目标端口运行实例（软件升级前）"
+    - name: "[install] 枚举同机运行中的 MySQL 实例服务（软件升级前）"
       tags: [install]
       shell: |
         set -o pipefail
-        PORT="{{ mysql_port }}"
-        SERVICE="{{ mysql_service_name }}"
-        CNF="{{ mysql_cnf_path }}"
-        if ! ss -lntH "sport = :${PORT}" 2>/dev/null | grep -q .; then
-          echo "free"
-          exit 0
-        fi
-        if systemctl is-active --quiet "${SERVICE}" 2>/dev/null; then
-          echo "platform"
-          exit 0
-        fi
-        if ps -ef 2>/dev/null | grep '[m]ysqld' | grep -Fq "${CNF}"; then
-          echo "platform"
-          exit 0
-        fi
-        echo "foreign"
+        systemctl list-units 'mysqld*.service' --state=running --plain --no-legend 2>/dev/null \
+          | awk '{print $1}' || true
       args:
         executable: /bin/bash
-      register: install_port_probe_raw
+      register: install_running_units_raw
       changed_when: false
+      when:
+        - mysql_need_software_install | default(true) | bool
+        - mysqld_bin.stat.exists | default(false)
+
+    - name: "[install] 解析同机运行中的 MySQL 实例服务"
+      tags: [install]
+      set_fact:
+        mysql_running_units: >-
+          {{ install_running_units_raw.stdout_lines | default([])
+             | map('trim') | select('length') | list }}
       when:
         - mysql_need_software_install | default(true) | bool
         - mysqld_bin.stat.exists | default(false)
@@ -512,8 +543,24 @@
       when:
         - mysql_need_software_install | default(true) | bool
         - mysqld_bin.stat.exists | default(false)
-        - (install_port_probe_raw.stdout | default('') | trim) == 'platform'
+        - (mysql_service_name ~ '.service') in (mysql_running_units | default([]))
         - not (mysql_force_rebuild | bool)
+
+    - name: "[install] 低版本软件升级前须停止同机所有 MySQL 实例"
+      tags: [install]
+      fail:
+        msg: >-
+          升级共享 MySQL 软件前须先停止同机所有运行中的 MySQL 实例：
+          {{ mysql_upgrade_blocking_units | join(', ') }}。
+          共享程序目录 {{ mysql_basedir }} 变更会影响全部实例。
+      vars:
+        mysql_upgrade_blocking_units: >-
+          {{ mysql_running_units | reject('equalto', mysql_service_name ~ '.service') | list
+             if mysql_force_rebuild | bool else mysql_running_units }}
+      when:
+        - mysql_need_software_install | default(true) | bool
+        - mysqld_bin.stat.exists | default(false)
+        - mysql_upgrade_blocking_units | default([]) | length > 0
 
     - name: "[install] 下载 MySQL 安装包"
       tags: [install]
