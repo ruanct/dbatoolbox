@@ -59,6 +59,7 @@ MYSQL_BINARY_BASEDIR = "/usr/local/mysql"
 MYSQL_SERVER_ID_MAX = 4294967295
 MYSQL_ROOT_GRANT_HOST = "localhost"
 MYSQL_DBA_ACCOUNT_TYPE = "user_dba"
+MYSQL_DBA_ACCOUNT_NAME = "dba_admin"
 MYSQL_ROOT_ACCOUNT_TYPE = "user_adm"
 MYSQL_DBA_GRANT_GROUPS: list[str] = [
     "SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, RELOAD, PROCESS, REFERENCES, INDEX, ALTER",
@@ -347,6 +348,7 @@ def finalize_mysql_deploy_params(merged: dict[str, Any]) -> None:
 
     merged.setdefault("credentials", {})
     admin_account = merged["credentials"].setdefault("admin_account", {})
+    admin_account.setdefault("account_name", MYSQL_DBA_ACCOUNT_NAME)
     admin_account["account_type"] = MYSQL_DBA_ACCOUNT_TYPE
     major_version = str((merged.get("profile") or {}).get("major_version") or "5.7")
     merged["credentials"]["dba_global_privileges"] = build_mysql_dba_global_privileges(major_version)

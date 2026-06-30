@@ -267,7 +267,7 @@ function buildMysqlPanelRows() {
         + '<tr><td class="deploy-label">实例参数</td><td class="deploy-field" colspan="3" id="mysql-path-preview-cell">'
         + mysqlPathPreviewHtml(3306, '', true, true, '-')
         + '</td></tr>'
-        + formRow2('root密码', '<input id="f-root-password" type="text" class="layui-input">', '运维账号', '<input id="f-mysql-admin-name" class="layui-input" value="admin">')
+        + formRow2('root密码', '<input id="f-root-password" type="text" class="layui-input">', '运维账号', '<input id="f-mysql-admin-name" class="layui-input" value="dba_admin">')
         + formRow2('运维密码', '<input id="f-mysql-admin-password" type="text" class="layui-input">', '授权主机', '<input id="f-grant-host" class="layui-input" value="%">')
         + formRow2('备注', '<input id="f-mysql-remark" class="layui-input">', '', '');
 }
@@ -490,7 +490,7 @@ layui.use(['table', 'layer', 'form'], function() {
         page: true,
         cols: [[
             {field: 'id', title: 'ID', width: 70},
-            {field: 'job_type__display', title: '部署类型', width: 120},
+            {field: 'job_type__display', title: '部署类型', width: 130},
             {field: 'version_profile_code', title: '版本档案', width: 130},
             {field: 'target_host__display', title: '目标主机', minWidth: 140},
             {field: 'status__display', title: '状态', width: 100},
