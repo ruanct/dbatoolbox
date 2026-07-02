@@ -1,0 +1,346 @@
+{% extends "base.html" %}
+{% block title %}MySQL参数模板 - DBAToolbox{% endblock %}
+
+{% block content %}
+<div class="breadcrumb">数据库管理 / 实例部署 / MySQL参数模板</div>
+
+<div class="layui-card">
+    <div class="layui-card-header"><span>MySQL 参数模板列表</span></div>
+    <div class="layui-card-body">
+        <div class="layui-form layui-form-item" style="margin-bottom:10px;">
+            <div class="layui-inline">
+                <select id="filter-major" lay-ignore style="height:38px;border:1px solid #e6e6e6;border-radius:2px;padding:0 8px;min-width:120px;">
+                    <option value="">全部 Major</option>
+                </select>
+            </div>
+            <div class="layui-inline">
+                <select id="filter-status" lay-ignore style="height:38px;border:1px solid #e6e6e6;border-radius:2px;padding:0 8px;min-width:100px;">
+                    <option value="">全部状态</option>
+                </select>
+            </div>
+            <div class="layui-inline">
+                <input type="text" id="search-keyword" placeholder="模板标题/编码搜索" class="layui-input" style="width:240px;">
+            </div>
+            <button class="layui-btn" id="btn-search"><i class="layui-icon layui-icon-search"></i> 搜索</button>
+            <button class="layui-btn layui-btn-normal" id="btn-add"><i class="layui-icon layui-icon-add-1"></i> 添加</button>
+        </div>
+        <table id="main-table" lay-filter="main-table"></table>
+    </div>
+</div>
+
+<script type="text/html" id="action-bar">
+    <a class="layui-btn layui-btn-xs layui-btn-normal" lay-event="edit">修改</a>
+    <a class="layui-btn layui-btn-xs layui-btn-danger" lay-event="del">删除</a>
+</script>
+
+{% verbatim %}
+<script type="text/html" id="default-tpl">
+    {{# if(d.is_default) { }}<span style="color:#5fb878;">是</span>{{# } else { }}<span style="color:#999;">否</span>{{# } }}
+</script>
+<script type="text/html" id="status-tpl">
+    {{# if(d.status === 'enabled') { }}<span style="color:#5fb878;">{{ d.status__display }}</span>{{# } else { }}<span style="color:#999;">{{ d.status__display }}</span>{{# } }}
+</script>
+{% endverbatim %}
+{% endblock %}
+
+{% block extra_script %}
+<script>
+var majorVersions = {{ major_versions|safe }};
+var statuses = {{ statuses|safe }};
+var sections = {{ sections|safe }};
+
+function buildSelect(name, list, currentVal, placeholder, valueField, labelField) {
+    valueField = valueField || 'value';
+    labelField = labelField || 'label';
+    var s = '<select name="' + name + '" lay-ignore style="width:100%;height:38px;border:1px solid #e6e6e6;border-radius:2px;padding:0 8px;">'
+        + '<option value="">' + (placeholder || '请选择') + '</option>';
+    for (var i = 0; i < list.length; i++) {
+        var val = list[i][valueField];
+        var sel = (String(val) === String(currentVal)) ? ' selected' : '';
+        s += '<option value="' + val + '"' + sel + '>' + list[i][labelField] + '</option>';
+    }
+    s += '</select>';
+    return s;
+}
+
+function initFilters() {
+    var $major = $('#filter-major');
+    for (var i = 0; i < majorVersions.length; i++) {
+        $major.append('<option value="' + majorVersions[i].value + '">' + majorVersions[i].label + '</option>');
+    }
+    var $status = $('#filter-status');
+    for (var j = 0; j < statuses.length; j++) {
+        $status.append('<option value="' + statuses[j].value + '">' + statuses[j].label + '</option>');
+    }
+}
+
+function escHtml(text) {
+    return String(text || '')
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
+function buildItemRow(item, index) {
+    item = item || {};
+    var section = item.section || 'mysqld';
+    var sectionSelect = '<select class="item-section layui-input" lay-ignore style="height:32px;">';
+    for (var i = 0; i < sections.length; i++) {
+        var sel = sections[i].value === section ? ' selected' : '';
+        sectionSelect += '<option value="' + sections[i].value + '"' + sel + '>' + sections[i].label + '</option>';
+    }
+    sectionSelect += '</select>';
+    return '<tr class="param-item-row">'
+        + '<td class="item-seq" style="text-align:center;width:40px;">' + index + '</td>'
+        + '<td style="width:110px;">' + sectionSelect + '</td>'
+        + '<td><input type="text" class="layui-input item-name" value="' + escHtml(item.param_name) + '" placeholder="如 max_connections"></td>'
+        + '<td><input type="text" class="layui-input item-value" value="' + escHtml(item.param_value) + '" placeholder="模板参数值"></td>'
+        + '<td><input type="text" class="layui-input item-default" value="' + escHtml(item.default_value) + '" placeholder="参考默认值"></td>'
+        + '<td><input type="text" class="layui-input item-remark" value="' + escHtml(item.remark) + '" placeholder="可选"></td>'
+        + '<td style="width:70px;text-align:center;">'
+        + '<a href="javascript:;" class="layui-btn layui-btn-xs item-del">删除</a>'
+        + '</td>'
+        + '</tr>';
+}
+
+function renumberItemRows() {
+    $('#param-items-body tr.param-item-row').each(function(i) {
+        $(this).find('.item-seq').text(i + 1);
+    });
+}
+
+function defaultItemsForMajor(major) {
+    if (major === '8.0') {
+        return [
+            {section: 'mysqld', param_name: 'innodb_buffer_pool_size', param_value: '2G', default_value: '1G'},
+            {section: 'mysqld', param_name: 'max_connections', param_value: '1000', default_value: '500'},
+            {section: 'mysqld', param_name: 'character-set-server', param_value: 'utf8mb4', default_value: 'utf8mb4'}
+        ];
+    }
+    return [
+        {section: 'mysqld', param_name: 'innodb_buffer_pool_size', param_value: '2G', default_value: '1G'},
+        {section: 'mysqld', param_name: 'max_connections', param_value: '1000', default_value: '500'},
+        {section: 'mysqld', param_name: 'sql_mode', param_value: 'STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION', default_value: ''}
+    ];
+}
+
+function renderItemsTable(items) {
+    var html = '';
+    items = items && items.length ? items : [{section: 'mysqld', param_name: '', param_value: '', default_value: ''}];
+    for (var i = 0; i < items.length; i++) {
+        html += buildItemRow(items[i], i + 1);
+    }
+    $('#param-items-body').html(html);
+}
+
+function collectItemsFromForm() {
+    var items = [];
+    $('#param-items-body tr.param-item-row').each(function(index) {
+        var $row = $(this);
+        items.push({
+            sort_order: index + 1,
+            section: $row.find('.item-section').val(),
+            param_name: $row.find('.item-name').val().trim(),
+            param_value: $row.find('.item-value').val().trim(),
+            default_value: $row.find('.item-default').val().trim(),
+            remark: $row.find('.item-remark').val().trim()
+        });
+    });
+    return items;
+}
+
+layui.use(['table', 'layer', 'form'], function() {
+    var table = layui.table;
+    var layer = layui.layer;
+    var form = layui.form;
+    initFilters();
+
+    var tableIns = table.render({
+        elem: '#main-table',
+        url: '/db-deploy/mysql-param-template/api/',
+        page: true,
+        limit: 10,
+        limits: [10, 20, 50],
+        cols: [[
+            {field: 'id', title: 'ID', width: 30},
+            {field: 'title', title: '模板标题', width: 280},
+            {field: 'major_version__display', title: 'Major', width: 120},
+            {field: 'item_count', title: '参数行', width: 80},
+            {field: 'is_default', title: '默认', width: 70, templet: '#default-tpl'},
+            {field: 'status', title: '状态', width: 80, templet: '#status-tpl'},
+            {field: 'updated_at', title: '更新时间', width: 180},
+            {field: 'template_code', title: '模板编码', width: 200},
+            {field: 'remark', title: '备注', minWidth: 120},
+            {title: '操作', width: 120, toolbar: '#action-bar', fixed: 'right'}
+        ]],
+        defaultToolbar: [],
+        request: {pageName: 'page', limitName: 'limit'},
+        response: {statusCode: 0, countName: 'count', dataName: 'data'},
+        parseData: function(res) {
+            return {code: res.code, msg: res.msg, count: res.count, data: res.data};
+        }
+    });
+
+    function reloadTable() {
+        tableIns.reload({
+            where: {
+                keyword: $('#search-keyword').val(),
+                major_version: $('#filter-major').val(),
+                status: $('#filter-status').val()
+            }
+        });
+    }
+
+    $('#btn-search').click(reloadTable);
+    $('#filter-major').change(reloadTable);
+    $('#filter-status').change(reloadTable);
+    $('#search-keyword').keydown(function(e) { if (e.keyCode === 13) reloadTable(); });
+
+    table.on('tool(main-table)', function(obj) {
+        if (obj.event === 'del') {
+            layer.confirm('确认删除该参数模板？', {icon: 3}, function(idx) {
+                $.ajax({
+                    url: '/db-deploy/mysql-param-template/api/',
+                    type: 'DELETE',
+                    contentType: 'application/json',
+                    data: JSON.stringify({id: obj.data.id}),
+                    headers: {'X-CSRFToken': getCookie('csrftoken_dbatoolbox')},
+                    success: function(r) {
+                        if (r.code === 0) { layer.msg(r.msg, {icon: 1}); reloadTable(); }
+                        else { layer.msg(r.msg, {icon: 2}); }
+                    }
+                });
+                layer.close(idx);
+            });
+        } else if (obj.event === 'edit') {
+            $.getJSON('/db-deploy/mysql-param-template/api/?id=' + obj.data.id, function(res) {
+                if (res.code === 0) {
+                    openForm('修改 MySQL 参数模板', res.data);
+                } else {
+                    layer.msg(res.msg || '加载失败', {icon: 2});
+                }
+            });
+        }
+    });
+
+    $('#btn-add').click(function() { openForm('添加 MySQL 参数模板'); });
+
+    function openForm(title, data) {
+        data = data || {};
+        var major = data.major_version || (majorVersions.length ? majorVersions[0].value : '5.7');
+        var items = data.items && data.items.length ? data.items : defaultItemsForMajor(major);
+
+        var html = '<div style="padding:15px 20px 5px;max-height:560px;overflow-y:auto;">'
+            + '<form class="layui-form" id="param-template-form">'
+            + '<input type="hidden" id="obj-id" value="' + (data.id || '') + '">'
+            + '<table class="layui-table" style="margin:0 0 12px;"><tbody>'
+            + '<tr>'
+                + '<td style="width:14%;text-align:right;">模板标题</td><td style="width:36%;"><input type="text" id="f-title" class="layui-input" value="' + escHtml(data.title) + '"></td>'
+                + '<td style="width:14%;text-align:right;">模板编码</td><td><input type="text" id="f-code" class="layui-input" value="' + escHtml(data.template_code) + '" placeholder="英文/数字/下划线"></td>'
+            + '</tr>'
+            + '<tr>'
+                + '<td style="text-align:right;">Major版本</td><td>' + buildSelect('f-major', majorVersions, major, '请选择') + '</td>'
+                + '<td style="text-align:right;">状态</td><td>' + buildSelect('f-status', statuses, data.status || 'enabled', '请选择') + '</td>'
+            + '</tr>'
+            + '<tr>'
+                + '<td style="text-align:right;">设为默认</td><td><input type="checkbox" id="f-is-default" lay-skin="primary" title="同 Major 下默认模板"' + (data.is_default ? ' checked' : '') + '></td>'
+                + '<td style="text-align:right;">备注</td><td><input type="text" id="f-remark" class="layui-input" value="' + escHtml(data.remark) + '"></td>'
+            + '</tr>'
+            + '</tbody></table>'
+            + '<div style="margin:8px 0 6px;font-weight:bold;">参数明细</div>'
+            + '<table class="layui-table" style="margin:0;">'
+            + '<thead><tr>'
+            + '<th style="width:20px;">#</th>'
+            + '<th style="width:80px;">配置段</th>'
+            + '<th style="width:240px;">参数名</th>'
+            + '<th style="width:160px;">参数值</th>'
+            + '<th style="width:160px;">参考默认值</th>'
+            + '<th>备注</th>'
+            + '<th style="width:60px;">操作</th>'
+            + '</tr></thead>'
+            + '<tbody id="param-items-body"></tbody></table>'
+            + '<button type="button" class="layui-btn layui-btn-sm layui-btn-primary" id="btn-add-item" style="margin-top:8px;">+ 添加参数行</button>'
+            + '<div style="margin-top:10px;color:#999;font-size:12px;">'
+            + 'basedir、datadir、port、socket、server_id 等由平台自动生成，请勿在此维护。'
+            + '</div>'
+            + '</form></div>';
+
+        var layerIdx = layer.open({
+            type: 1,
+            title: title,
+            area: ['1200px', '760px'],
+            content: html,
+            btn: ['保存', '取消'],
+            success: function() {
+                renderItemsTable(items);
+                form.render('checkbox');
+                $('#btn-add-item').off('click').on('click', function() {
+                    var count = $('#param-items-body tr.param-item-row').length + 1;
+                    $('#param-items-body').append(buildItemRow({}, count));
+                });
+                $('#param-items-body').off('click', '.item-del').on('click', '.item-del', function() {
+                    if ($('#param-items-body tr.param-item-row').length <= 1) {
+                        layer.msg('至少保留一条参数明细', {icon: 2});
+                        return;
+                    }
+                    $(this).closest('tr').remove();
+                    renumberItemRows();
+                });
+                $('select[name="f-major"]').off('change.tplMajor').on('change.tplMajor', function() {
+                    if (!$('#obj-id').val() && $('#param-items-body tr.param-item-row').length <= 1) {
+                        var nameVal = $('#param-items-body .item-name').first().val();
+                        if (!nameVal) {
+                            renderItemsTable(defaultItemsForMajor($(this).val()));
+                        }
+                    }
+                });
+            },
+            yes: function(index) {
+                var payload = {
+                    id: $('#obj-id').val(),
+                    title: $('#f-title').val().trim(),
+                    template_code: $('#f-code').val().trim(),
+                    major_version: $('select[name="f-major"]').val(),
+                    status: $('select[name="f-status"]').val(),
+                    is_default: $('#f-is-default').prop('checked'),
+                    remark: $('#f-remark').val().trim(),
+                    items: collectItemsFromForm()
+                };
+                if (!payload.title) { layer.msg('请填写模板标题', {icon: 2}); return; }
+                if (!payload.template_code) { layer.msg('请填写模板编码', {icon: 2}); return; }
+                if (!payload.major_version) { layer.msg('请选择 Major 版本', {icon: 2}); return; }
+
+                var isEdit = !!payload.id;
+                $.ajax({
+                    url: '/db-deploy/mysql-param-template/api/',
+                    type: isEdit ? 'PUT' : 'POST',
+                    contentType: 'application/json',
+                    data: JSON.stringify(payload),
+                    headers: {'X-CSRFToken': getCookie('csrftoken_dbatoolbox')},
+                    success: function(r) {
+                        if (r.code === 0) {
+                            layer.msg(r.msg, {icon: 1});
+                            layer.close(index);
+                            reloadTable();
+                        } else {
+                            layer.msg(r.msg, {icon: 2});
+                        }
+                    },
+                    error: function(xhr) {
+                        var r = xhr.responseJSON || {};
+                        layer.msg(r.msg || '请求失败', {icon: 2});
+                    }
+                });
+            },
+            btn2: function(index) { layer.close(index); }
+        });
+    }
+
+    function getCookie(name) {
+        var r = document.cookie.match("\\b" + name + "=([^;]*)\\b");
+        return r ? r[1] : '';
+    }
+});
+</script>
+{% endblock %}

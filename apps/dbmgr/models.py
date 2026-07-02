@@ -416,3 +416,77 @@ class DbDeployJobStep(models.Model):
 
     def __str__(self) -> str:
         return f"{self.job_id} / {self.step_code}"
+
+
+class DbDeployMysqlParamTemplate(models.Model):
+    """MySQL 单实例部署参数模板（my.cnf 运行参数）"""
+
+    STATUS_CHOICES = [
+        ("enabled", "启用"),
+        ("disabled", "禁用"),
+    ]
+    MAJOR_VERSION_CHOICES = [
+        ("5.7", "MySQL 5.7"),
+        ("8.0", "MySQL 8.0"),
+    ]
+
+    template_code = models.CharField(max_length=64, unique=True, verbose_name="模板编码")
+    title = models.CharField(max_length=128, verbose_name="模板标题")
+    major_version = models.CharField(
+        max_length=16, choices=MAJOR_VERSION_CHOICES, verbose_name="MySQL major 版本",
+    )
+    status = models.CharField(
+        max_length=16, choices=STATUS_CHOICES, default="enabled", verbose_name="状态",
+    )
+    is_default = models.BooleanField(default=False, verbose_name="同 major 默认模板")
+    remark = models.TextField(blank=True, default="", verbose_name="备注")
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
+    updated_at = models.DateTimeField(auto_now=True, verbose_name="更新时间")
+
+    class Meta:
+        db_table = "dbmgr_deploy_mysql_param_template"
+        verbose_name = "MySQL 部署参数模板"
+        verbose_name_plural = verbose_name
+        ordering = ["major_version", "title", "id"]
+
+    def __str__(self) -> str:
+        return self.title
+
+
+class DbDeployMysqlParamTemplateItem(models.Model):
+    """MySQL 部署参数模板明细行"""
+
+    SECTION_CHOICES = [
+        ("mysqld", "[mysqld]"),
+        ("client", "[client]"),
+    ]
+
+    template = models.ForeignKey(
+        DbDeployMysqlParamTemplate,
+        on_delete=models.CASCADE,
+        related_name="items",
+        verbose_name="所属模板",
+    )
+    sort_order = models.PositiveSmallIntegerField(default=0, verbose_name="排序")
+    section = models.CharField(
+        max_length=32, choices=SECTION_CHOICES, default="mysqld", verbose_name="配置段",
+    )
+    param_name = models.CharField(max_length=128, verbose_name="参数名")
+    param_value = models.CharField(max_length=512, verbose_name="参数值")
+    default_value = models.CharField(max_length=512, blank=True, default="", verbose_name="参考默认值")
+    remark = models.CharField(max_length=256, blank=True, default="", verbose_name="备注")
+
+    class Meta:
+        db_table = "dbmgr_deploy_mysql_param_template_item"
+        verbose_name = "MySQL 部署参数模板明细"
+        verbose_name_plural = verbose_name
+        ordering = ["sort_order", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["template", "section", "param_name"],
+                name="uniq_dbmgr_mysql_param_tpl_item",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.param_name}={self.param_value}"

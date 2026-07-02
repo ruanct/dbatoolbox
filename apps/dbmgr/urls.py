@@ -19,4 +19,14 @@ urlpatterns = [
     path("db-deploy/api/", views.deploy_job_api_view, name="db_deploy_api"),
     path("db-deploy/api/<int:job_id>/", views.deploy_job_detail_api_view, name="db_deploy_detail_api"),
     path("db-deploy/profiles/api/", views.deploy_profile_api_view, name="db_deploy_profiles_api"),
+    path(
+        "db-deploy/mysql-param-template/",
+        views.mysql_param_template_list_view,
+        name="db_deploy_mysql_param_template_list",
+    ),
+    path(
+        "db-deploy/mysql-param-template/api/",
+        views.mysql_param_template_api_view,
+        name="db_deploy_mysql_param_template_api",
+    ),
 ]

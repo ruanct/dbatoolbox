@@ -60,6 +60,33 @@ MYSQL_SERVER_ID_MAX = 4294967295
 MYSQL_ROOT_GRANT_HOST = "localhost"
 MYSQL_DBA_ACCOUNT_TYPE = "user_dba"
 MYSQL_DBA_ACCOUNT_NAME = "dba_admin"
+
+MYSQL_PARAM_TEMPLATE_MAJOR_CHOICES: list[tuple[str, str]] = [
+    ("5.7", "MySQL 5.7"),
+    ("8.0", "MySQL 8.0"),
+]
+
+MYSQL_PARAM_TEMPLATE_STATUS_CHOICES: list[tuple[str, str]] = [
+    ("enabled", "启用"),
+    ("disabled", "禁用"),
+]
+
+# my.cnf 中由平台/Playbook 派生或固定写入，禁止在参数模板中维护
+MYSQL_PARAM_TEMPLATE_RESERVED_NAMES: frozenset[str] = frozenset({
+    "basedir",
+    "datadir",
+    "port",
+    "socket",
+    "server_id",
+    "log-error",
+    "log_error",
+    "pid-file",
+    "pid_file",
+    "bind-address",
+    "bind_address",
+    "log_bin",
+    "log-bin",
+})
 MYSQL_ROOT_ACCOUNT_TYPE = "user_adm"
 MYSQL_DBA_GRANT_GROUPS: list[str] = [
     "SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, RELOAD, PROCESS, REFERENCES, INDEX, ALTER",

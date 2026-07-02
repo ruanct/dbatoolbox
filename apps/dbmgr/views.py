@@ -7,6 +7,14 @@ from django.shortcuts import render
 from django.views.decorators.http import require_http_methods
 
 from .models import DatabaseInstance
+from .deploy_param_template_services import (
+    create_mysql_param_template,
+    delete_mysql_param_template,
+    get_mysql_param_template_detail,
+    get_mysql_param_template_form_options,
+    list_mysql_param_templates,
+    update_mysql_param_template,
+)
 from .deploy_services import (
     cancel_deploy_job,
     create_deploy_job,
@@ -103,6 +111,22 @@ def _list_filter_params(request) -> dict[str, Any]:
         "engine": _engine_filter(request),
         "instance_id": _instance_filter(request),
     }
+
+
+def _mysql_major_filter(request) -> str | None:
+    raw = request.GET.get("major_version", "").strip()
+    if not raw:
+        return None
+    valid = {"5.7", "8.0"}
+    return raw if raw in valid else None
+
+
+def _template_status_filter(request) -> str | None:
+    raw = request.GET.get("status", "").strip()
+    if not raw:
+        return None
+    valid = {"enabled", "disabled"}
+    return raw if raw in valid else None
 
 
 # ===== 复制集集群 =====
@@ -303,3 +327,38 @@ def deploy_profile_api_view(request):
     job_type = request.GET.get("job_type", "").strip() or None
     engine = request.GET.get("engine", "").strip() or None
     return _json_service(list_deploy_profiles, job_type=job_type, engine=engine)
+
+
+# ===== MySQL 参数模板 =====
+
+@login_required
+def mysql_param_template_list_view(request):
+    options = get_mysql_param_template_form_options()
+    context = {key: json.dumps(val) for key, val in options.items()}
+    return render(request, "dbmgr/mysql_param_template_list.html", context)
+
+
+@login_required
+@require_http_methods(["GET", "POST", "PUT", "DELETE"])
+def mysql_param_template_api_view(request):
+    if request.method == "GET":
+        detail_id = request.GET.get("id", "").strip()
+        if detail_id:
+            try:
+                return _json_service(get_mysql_param_template_detail, int(detail_id))
+            except ValueError:
+                return JsonResponse({"code": 1, "msg": "无效的 ID"}, status=400)
+        page, limit, keyword = _page_params(request)
+        return _json_service(
+            list_mysql_param_templates,
+            page=page,
+            limit=limit,
+            keyword=keyword,
+            major_version=_mysql_major_filter(request),
+            status=_template_status_filter(request),
+        )
+    if request.method == "POST":
+        return _json_from_body(create_mysql_param_template, request)
+    if request.method == "PUT":
+        return _json_from_body(update_mysql_param_template, request)
+    return _json_from_body(lambda body: delete_mysql_param_template(body.get("id")), request)
