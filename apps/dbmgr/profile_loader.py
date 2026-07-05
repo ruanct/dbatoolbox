@@ -191,7 +191,20 @@ def resolve_deploy_params(
             .first()
         )
 
-    merged = _deep_merge(profile.get("default_params") or {}, user_params)
+    merged = _deep_merge(profile.get("default_params") or {}, {})
+    user_meta = user_params.get("meta") if isinstance(user_params.get("meta"), dict) else {}
+    template_code = (user_meta.get("mysql_param_template_code") or "").strip()
+    template_title = (user_meta.get("mysql_param_template_title") or "").strip()
+    if template_code or template_title:
+        from .deploy_param_template_services import apply_mysql_param_template_to_merged
+
+        apply_mysql_param_template_to_merged(
+            merged,
+            profile_major=str(profile.get("major_version") or ""),
+            template_code=template_code,
+            template_title=template_title,
+        )
+    merged = _deep_merge(merged, user_params)
     merged.setdefault("meta", {})
     merged["meta"].update({
         "job_type": job_type,

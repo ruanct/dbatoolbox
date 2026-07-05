@@ -24,6 +24,176 @@ MAJOR_LABELS = dict(MYSQL_PARAM_TEMPLATE_MAJOR_CHOICES)
 SECTION_LABELS = dict(DbDeployMysqlParamTemplateItem.SECTION_CHOICES)
 
 
+PARAM_NAME_TO_CONFIG_KEY: dict[str, str] = {
+    "character-set-server": "character_set",
+    "character_set_server": "character_set",
+    "collation-server": "collation",
+    "collation_server": "collation",
+    "max_connections": "max_connections",
+    "innodb_buffer_pool_size": "innodb_buffer_pool_size",
+    "binlog_format": "binlog_format",
+    "default_authentication_plugin": "default_authentication_plugin",
+    "sql_mode": "sql_mode",
+    "default-character-set": "client_character_set",
+    "default_character_set": "client_character_set",
+}
+
+
+def _normalize_cnf_param_name(name: str) -> str:
+    return (name or "").strip().lower().replace("_", "-")
+
+
+def _config_key_for_param_name(param_name: str) -> str | None:
+    key = PARAM_NAME_TO_CONFIG_KEY.get(param_name.strip())
+    if key:
+        return key
+    return PARAM_NAME_TO_CONFIG_KEY.get(_normalize_cnf_param_name(param_name))
+
+
+def list_mysql_param_template_options(
+    *,
+    major_version: str | None = None,
+) -> list[dict[str, Any]]:
+    queryset = DbDeployMysqlParamTemplate.objects.filter(status="enabled").order_by(
+        "major_version", "-is_default", "title", "id",
+    )
+    if major_version:
+        queryset = queryset.filter(major_version=major_version)
+    return [
+        {
+            "template_code": item.template_code,
+            "title": item.title,
+            "major_version": item.major_version,
+            "is_default": item.is_default,
+        }
+        for item in queryset
+    ]
+
+
+def load_enabled_mysql_param_template(template_code: str) -> DbDeployMysqlParamTemplate:
+    code = (template_code or "").strip()
+    if not code:
+        raise ServiceError("请选择 MySQL 参数模板")
+    try:
+        obj = DbDeployMysqlParamTemplate.objects.prefetch_related("items").get(
+            template_code=code,
+            status="enabled",
+        )
+    except DbDeployMysqlParamTemplate.DoesNotExist as exc:
+        raise ServiceError(f"未找到启用的 MySQL 参数模板: {code}") from exc
+    return obj
+
+
+def load_enabled_mysql_param_template_by_title(
+    title: str,
+    major_version: str,
+) -> DbDeployMysqlParamTemplate:
+    title = (title or "").strip()
+    major_version = _validate_major_version(major_version)
+    if not title:
+        raise ServiceError("请选择 MySQL 参数模板")
+    queryset = DbDeployMysqlParamTemplate.objects.prefetch_related("items").filter(
+        title=title,
+        major_version=major_version,
+        status="enabled",
+    )
+    count = queryset.count()
+    if count == 0:
+        raise ServiceError(
+            f"未找到启用的 MySQL 参数模板: major={major_version}, title={title}"
+        )
+    if count > 1:
+        raise ServiceError(
+            f"参数模板标题「{title}」在 MySQL {major_version} 下不唯一，请联系 DBA 处理"
+        )
+    return queryset.first()
+
+
+def _apply_template_object_to_merged(
+    merged: dict[str, Any],
+    template: DbDeployMysqlParamTemplate,
+    *,
+    profile_major: str,
+) -> None:
+    profile_major = (profile_major or "").strip()
+    if template.major_version != profile_major:
+        raise ServiceError(
+            f"参数模板 major={template.major_version} 与版本档案 major={profile_major} 不一致"
+        )
+
+    meta = merged.setdefault("meta", {})
+    meta["mysql_param_template_code"] = template.template_code
+    meta["mysql_param_template_title"] = template.title
+
+    config = merged.setdefault("config", {})
+    cnf_items: dict[str, list[dict[str, str]]] = {"mysqld": [], "client": []}
+
+    for item in template.items.order_by("sort_order", "id"):
+        param_value = (item.param_value or item.default_value or "").strip()
+        if not param_value:
+            continue
+
+        config_key = _config_key_for_param_name(item.param_name)
+        if config_key and item.section == "mysqld":
+            config[config_key] = param_value
+
+        section = item.section if item.section in cnf_items else "mysqld"
+        cnf_items[section].append({
+            "param_name": item.param_name.strip(),
+            "param_value": param_value,
+        })
+
+    config["cnf_template_items"] = cnf_items
+
+
+def apply_mysql_param_template_to_merged(
+    merged: dict[str, Any],
+    *,
+    profile_major: str,
+    template_code: str = "",
+    template_title: str = "",
+) -> None:
+    """将参数模板合并进 resolved_params（在 user_params 覆盖之前调用）。"""
+    code = (template_code or "").strip()
+    title = (template_title or "").strip()
+    if not code and not title:
+        return
+
+    if code:
+        template = load_enabled_mysql_param_template(code)
+    else:
+        template = load_enabled_mysql_param_template_by_title(title, profile_major)
+
+    _apply_template_object_to_merged(merged, template, profile_major=profile_major)
+
+
+def get_mysql_param_template_title_options(major_version: str) -> dict[str, Any]:
+    major_version = _validate_major_version(major_version)
+    return {
+        "code": 0,
+        "msg": "",
+        "data": list_mysql_param_template_options(major_version=major_version),
+    }
+
+
+def get_mysql_param_template_by_code(template_code: str) -> dict[str, Any]:
+    obj = load_enabled_mysql_param_template(template_code)
+    return {
+        "code": 0,
+        "msg": "",
+        "data": _serialize_template(obj, include_items=True),
+    }
+
+
+def get_mysql_param_template_by_title(title: str, major_version: str) -> dict[str, Any]:
+    obj = load_enabled_mysql_param_template_by_title(title, major_version)
+    return {
+        "code": 0,
+        "msg": "",
+        "data": _serialize_template(obj, include_items=True),
+    }
+
+
 def get_mysql_param_template_form_options() -> dict[str, Any]:
     return {
         "major_versions": [

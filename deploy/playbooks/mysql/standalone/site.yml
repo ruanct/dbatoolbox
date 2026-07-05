@@ -6,11 +6,12 @@
     d: "{{ deploy }}"
     mysql_basedir: "{{ d.install.basedir | default('/usr/local/mysql') }}"
     mysql_port: "{{ d.cmdb.port | default(3306) }}"
-    mysql_instance_root: "{{ d.install.instance_root | default('/data/mysql' ~ mysql_port) }}"
+    mysql_instance_root: "{{ d.install.instance_root | default('/data/mysql/db' ~ mysql_port) }}"
     mysql_datadir: "{{ d.install.datadir | default(mysql_instance_root ~ '/data') }}"
     mysql_socket: "{{ d.install.socket | default(mysql_instance_root ~ '/mysql.sock') }}"
     mysql_cnf_path: "{{ d.install.cnf_path | default(mysql_instance_root ~ '/my.cnf') }}"
     mysql_log_error: "{{ d.install.log_error | default(mysql_instance_root ~ '/mysql_err.log') }}"
+    mysql_tmpdir: "{{ d.install.tmpdir | default(mysql_instance_root ~ '/tmp') }}"
     mysql_service_name: "{{ d.install.service_name | default('mysqld' ~ mysql_port) }}"
     mysql_binlog_dir: "{{ d.install.binlog_dir | default(mysql_instance_root ~ '/binlog') }}"
     mysql_log_bin: "{{ d.install.log_bin | default(mysql_binlog_dir ~ '/mysql-bin') }}"
@@ -37,6 +38,7 @@
     mysql_force_rebuild: "{{ d.meta.force_rebuild | default(false) | bool }}"
     mysql_bootstrap_bind_address: "127.0.0.1"
     mysql_bind_address: "{{ d.config.bind_address | default('0.0.0.0') }}"
+    mysql_semi_sync_master_timeout: 1000
 
   tasks:
     - name: "[precheck] 归一化操作系统族"
@@ -467,6 +469,7 @@
       loop:
         - "{{ mysql_instance_root }}"
         - "{{ mysql_datadir }}"
+        - "{{ mysql_tmpdir }}"
         - "{{ mysql_basedir | dirname }}"
 
     - name: "[prepare] 创建 binlog 目录"
@@ -646,35 +649,13 @@
         mode: "0644"
         content: |
           [mysqld]
-          basedir={{ mysql_basedir }}
-          datadir={{ mysql_datadir }}
-          port={{ mysql_port }}
-          socket={{ mysql_socket }}
-          bind-address={{ mysql_bootstrap_bind_address }}
-          character-set-server={{ d.config.character_set | default('utf8mb4') }}
-          collation-server={{ d.config.collation | default('utf8mb4_0900_ai_ci' if (mysql_profile_major is version('8.0', '>=')) else 'utf8mb4_unicode_ci') }}
-          max_connections={{ d.config.max_connections | default(500) }}
-          innodb_buffer_pool_size={{ d.config.innodb_buffer_pool_size | default('1G') }}
-          default_authentication_plugin={{ d.config.default_authentication_plugin | default('caching_sha2_password' if (mysql_profile_major is version('8.0', '>=')) else 'mysql_native_password') }}
-          log-error={{ mysql_log_error }}
-          pid-file={{ mysql_datadir }}/mysqld.pid
-          symbolic-links=0
-          explicit_defaults_for_timestamp=1
-          {% if mysql_enable_binlog | bool %}
-          server_id={{ mysql_server_id }}
-          log_bin={{ mysql_log_bin }}
-          binlog_format={{ d.config.binlog_format | default('ROW') }}
-          {% if mysql_enable_gtid | bool %}
-          gtid_mode=ON
-          enforce_gtid_consistency=ON
-          log_slave_updates=ON
-          {% endif %}
-          {% else %}
-          skip-log-bin
-          {% endif %}
+          {% for line in d.config.cnf_sections.mysqld | default([]) %}
+          {{ line }}
+          {% endfor %}
           [client]
-          socket={{ mysql_socket }}
-          default-character-set={{ d.config.character_set | default('utf8mb4') }}
+          {% for line in d.config.cnf_sections.client | default([]) %}
+          {{ line }}
+          {% endfor %}
 
     - name: "[initialize] 初始化数据目录"
       tags: [initialize]
@@ -779,6 +760,26 @@
           password="{{ d.credentials.root_password | replace('"', '\\"') }}"
           socket={{ mysql_socket }}
 
+    - name: "[post_config] 安装 semi-sync master 插件并启用"
+      tags: [post_config]
+      shell: |
+        set -o pipefail
+        MYSQL="{{ mysql_basedir }}/bin/mysql"
+        CNF="{{ mysql_root_client_cnf_path }}"
+        count=$("$MYSQL" --defaults-extra-file="$CNF" -Nse \
+          "SELECT COUNT(*) FROM information_schema.plugins WHERE PLUGIN_NAME='rpl_semi_sync_master'")
+        if [ "$count" = "0" ]; then
+          "$MYSQL" --defaults-extra-file="$CNF" -e \
+            "INSTALL PLUGIN rpl_semi_sync_master SONAME 'semisync_master.so';"
+        fi
+        "$MYSQL" --defaults-extra-file="$CNF" -e \
+          "SET GLOBAL rpl_semi_sync_master_timeout = {{ mysql_semi_sync_master_timeout }};"
+        "$MYSQL" --defaults-extra-file="$CNF" -e \
+          "SET GLOBAL rpl_semi_sync_master_enabled = 1;"
+      args:
+        executable: /bin/bash
+      when: mysql_enable_binlog | bool
+
     - name: "[post_config] 生成 DBA 账号 SQL"
       tags: [post_config]
       copy:
@@ -809,6 +810,21 @@
       register: admin_user
       changed_when: admin_user.rc == 0
 
+    - name: "[post_config] 写入 my.cnf semi-sync master 参数"
+      tags: [post_config]
+      blockinfile:
+        path: "{{ mysql_cnf_path }}"
+        marker: "# {mark} DBATOOLBOX MANAGED SEMI SYNC MASTER"
+        insertafter: '^\[mysqld\]'
+        block: |
+          rpl_semi_sync_master_timeout={{ mysql_semi_sync_master_timeout }}
+          rpl_semi_sync_master_enabled=1
+        owner: mysql
+        group: mysql
+        mode: "0644"
+      when: mysql_enable_binlog | bool
+      register: mysql_semi_sync_cnf_updated
+
     - name: "[post_config] 放开 bind-address 对外监听"
       tags: [post_config]
       replace:
@@ -823,7 +839,9 @@
         name: "{{ mysql_service_name }}"
         state: restarted
         daemon_reload: true
-      when: mysql_bind_updated.changed | default(false)
+      when: >
+        (mysql_bind_updated.changed | default(false))
+        or (mysql_semi_sync_cnf_updated.changed | default(false))
 
     - name: "[post_config] 等待对外监听就绪"
       tags: [post_config]
@@ -831,7 +849,9 @@
         port: "{{ mysql_port }}"
         delay: 2
         timeout: 120
-      when: mysql_bind_updated.changed | default(false)
+      when: >
+        (mysql_bind_updated.changed | default(false))
+        or (mysql_semi_sync_cnf_updated.changed | default(false))
 
     - name: "[post_config] 清理临时 SQL 与历史凭据文件"
       tags: [post_config]

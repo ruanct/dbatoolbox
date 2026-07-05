@@ -86,6 +86,9 @@ MYSQL_PARAM_TEMPLATE_RESERVED_NAMES: frozenset[str] = frozenset({
     "bind_address",
     "log_bin",
     "log-bin",
+    "tmpdir",
+    "slow-query-log-file",
+    "slow_query_log_file",
 })
 MYSQL_ROOT_ACCOUNT_TYPE = "user_adm"
 MYSQL_DBA_GRANT_GROUPS: list[str] = [
@@ -315,15 +318,17 @@ def ensure_mysql_server_id_available(
 def build_mysql_install_paths(port: int) -> dict[str, str]:
     """按端口生成 MySQL 实例目录与配置文件路径（basedir 固定为二进制安装路径）。"""
     port_num = int(port) if port else 3306
-    instance_root = f"/data/mysql{port_num}"
+    instance_root = f"/data/mysql/db{port_num}"
     binlog_dir = f"{instance_root}/binlog"
     return {
         "basedir": MYSQL_BINARY_BASEDIR,
         "instance_root": instance_root,
         "datadir": f"{instance_root}/data",
+        "tmpdir": f"{instance_root}/tmp",
         "socket": f"{instance_root}/mysql.sock",
         "cnf_path": f"{instance_root}/my.cnf",
         "log_error": f"{instance_root}/mysql_err.log",
+        "slow_query_log_file": f"{instance_root}/slow_query.log",
         "binlog_dir": binlog_dir,
         "log_bin": f"{binlog_dir}/mysql-bin",
         "service_name": f"mysqld{port_num}",
@@ -380,3 +385,114 @@ def finalize_mysql_deploy_params(merged: dict[str, Any]) -> None:
     major_version = str((merged.get("profile") or {}).get("major_version") or "5.7")
     merged["credentials"]["dba_global_privileges"] = build_mysql_dba_global_privileges(major_version)
     merged["credentials"]["dba_grant_statements"] = build_mysql_dba_grant_statements(major_version)
+    build_mysql_cnf_sections(merged)
+
+
+def _cnf_line_key(line: str) -> str:
+    name = (line or "").split("=", 1)[0].strip()
+    return name.lower().replace("_", "-")
+
+
+def build_mysql_cnf_sections(merged: dict[str, Any]) -> None:
+    """根据合并后的 config/install 生成 my.cnf 各段行列表。"""
+    config = merged.setdefault("config", {})
+    install = merged.get("install") or {}
+    profile_major = str((merged.get("profile") or {}).get("major_version") or "5.7")
+    is_mysql80 = _parse_major_minor(profile_major) >= (8, 0)
+
+    enable_binlog = _coerce_bool(config.get("enable_binlog"), default=True)
+    enable_gtid = _coerce_bool(config.get("enable_gtid"), default=True) and enable_binlog
+
+    character_set = config.get("character_set") or "utf8mb4"
+    collation = config.get("collation") or (
+        "utf8mb4_0900_ai_ci" if is_mysql80 else "utf8mb4_unicode_ci"
+    )
+    max_connections = config.get("max_connections") or 500
+    innodb_buffer_pool_size = config.get("innodb_buffer_pool_size") or "1G"
+    auth_plugin = config.get("default_authentication_plugin") or (
+        "caching_sha2_password" if is_mysql80 else "mysql_native_password"
+    )
+    client_charset = config.get("client_character_set") or character_set
+
+    mysqld_lines: list[str] = [
+        f"basedir={install.get('basedir', MYSQL_BINARY_BASEDIR)}",
+        f"datadir={install.get('datadir', '')}",
+        f"port={merged.get('cmdb', {}).get('port', 3306)}",
+        f"socket={install.get('socket', '')}",
+        "bind-address=127.0.0.1",
+        f"character-set-server={character_set}",
+        f"collation-server={collation}",
+        f"max_connections={max_connections}",
+        f"innodb_buffer_pool_size={innodb_buffer_pool_size}",
+        f"default_authentication_plugin={auth_plugin}",
+        f"log-error={install.get('log_error', '')}",
+        f"tmpdir={install.get('tmpdir', '')}",
+        f"slow_query_log_file={install.get('slow_query_log_file', '')}",
+        f"pid-file={install.get('datadir', '')}/mysqld.pid",
+        "symbolic-links=0",
+        "explicit_defaults_for_timestamp=1",
+    ]
+
+    if config.get("sql_mode"):
+        mysqld_lines.append(f"sql_mode={config['sql_mode']}")
+
+    written_keys = {_cnf_line_key(line) for line in mysqld_lines}
+
+    if enable_binlog:
+        mysqld_lines.append(f"server_id={config.get('server_id', '')}")
+        mysqld_lines.append(f"log_bin={install.get('log_bin', '')}")
+        mysqld_lines.append(f"binlog_format={config.get('binlog_format') or 'ROW'}")
+        written_keys.update(
+            _cnf_line_key(line) for line in mysqld_lines[-3:]
+        )
+        if enable_gtid:
+            for gtid_line in (
+                "gtid_mode=ON",
+                "enforce_gtid_consistency=ON",
+                "log_slave_updates=ON",
+            ):
+                mysqld_lines.append(gtid_line)
+                written_keys.add(_cnf_line_key(gtid_line))
+    else:
+        mysqld_lines.append("skip-log-bin")
+        written_keys.add("skip-log-bin")
+
+    template_items = (config.get("cnf_template_items") or {}).get("mysqld") or []
+    for item in template_items:
+        param_name = (item.get("param_name") or "").strip()
+        param_value = (item.get("param_value") or "").strip()
+        if not param_name or not param_value:
+            continue
+        line_key = _normalize_cnf_param_name(param_name)
+        if line_key in written_keys:
+            continue
+        if line_key in {_normalize_cnf_param_name(x) for x in MYSQL_PARAM_TEMPLATE_RESERVED_NAMES}:
+            continue
+        mysqld_lines.append(f"{param_name}={param_value}")
+        written_keys.add(line_key)
+
+    client_lines: list[str] = [
+        f"socket={install.get('socket', '')}",
+        f"default-character-set={client_charset}",
+    ]
+    client_written = {_cnf_line_key(line) for line in client_lines}
+    client_template_items = (config.get("cnf_template_items") or {}).get("client") or []
+    for item in client_template_items:
+        param_name = (item.get("param_name") or "").strip()
+        param_value = (item.get("param_value") or "").strip()
+        if not param_name or not param_value:
+            continue
+        line_key = _normalize_cnf_param_name(param_name)
+        if line_key in client_written:
+            continue
+        client_lines.append(f"{param_name}={param_value}")
+        client_written.add(line_key)
+
+    config["cnf_sections"] = {
+        "mysqld": mysqld_lines,
+        "client": client_lines,
+    }
+
+
+def _normalize_cnf_param_name(name: str) -> str:
+    return (name or "").strip().lower().replace("_", "-")

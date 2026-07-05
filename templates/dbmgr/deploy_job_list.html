@@ -14,6 +14,22 @@
 }
 .deploy-form-table td.deploy-field { width: 36%; }
 .deploy-form-wrap { padding: 15px 20px 5px; max-height: 80vh; overflow-y: auto; }
+.mysql-path-preview-wrap {
+    display: flex;
+    width: 100%;
+}
+.mysql-path-preview-col {
+    width: 50%;
+    box-sizing: border-box;
+    font-size: 12px;
+    color: #666;
+    line-height: 1.8;
+}
+.mysql-path-preview-col-left { padding-right: 10px; }
+.mysql-path-preview-col-right {
+    padding-left: 10px;
+    border-left: 1px solid #eee;
+}
 </style>
 
 <div class="layui-card">
@@ -96,7 +112,11 @@ function formRow2(label1, field1, label2, field2) {
 
 function mysqlInstanceRoot(port) {
     var p = parseInt(port, 10) || 3306;
-    return '/data/mysql' + p;
+    return '/data/mysql/db' + p;
+}
+
+function mysqlSlowQueryLogFile(port) {
+    return mysqlInstanceRoot(port) + '/slow_query.log';
 }
 
 function isMysqlDeployJobType(jobType) {
@@ -150,29 +170,43 @@ function applyConnectHostFieldMode(jobType) {
     }
 }
 
-function mysqlPathPreviewHtml(port, connectHost, enableBinlog, enableGtid, serverId) {
+function mysqlPathPreviewLeftHtml(port) {
+    var root = mysqlInstanceRoot(port);
+    return '参数文件：<code>' + root + '/my.cnf</code><br>'
+        + '数据目录：<code>' + root + '/data</code><br>'
+        + '临时目录：<code>' + root + '/tmp</code><br>'
+        + 'Socket：<code>' + root + '/mysql.sock</code><br>'
+        + '错误日志：<code>' + root + '/mysql_err.log</code><br>'
+        + '慢日志：<code>' + mysqlSlowQueryLogFile(port) + '</code>';
+}
+
+function mysqlPathPreviewRightHtml(port, enableBinlog, enableGtid, serverId) {
     var root = mysqlInstanceRoot(port);
     var binlogOn = !!enableBinlog;
     var gtidOn = binlogOn && !!enableGtid;
-    var logBin = root + '/binlog/mysql-bin';
-    var html = '<div style="font-size:12px;color:#666;line-height:1.8;">'
-        + '实例目录：<code>' + root + '</code><br>'
-        + '参数文件：<code>' + root + '/my.cnf</code><br>'
-        + '数据目录：<code>' + root + '/data</code><br>'
-        + 'Socket：<code>' + root + '/mysql.sock</code><br>'
-        + '错误日志：<code>' + root + '/mysql_err.log</code>';
-    if (binlogOn) {
-        html += '<br>server_id：<code>' + serverId + '</code>'
-            + '<br>log_bin：<code>' + logBin + '</code>'
-            + '<br>binlog_format：<code>ROW</code>';
-    }
-    if (gtidOn) {
-        html += '<br>gtid_mode：<code>ON</code>'
-            + '<br>enforce_gtid_consistency：<code>ON</code>'
-            + '<br>log_slave_updates：<code>ON</code>';
-    }
-    html += '</div>';
-    return html;
+    var sid = binlogOn ? serverId : '-';
+    var logBin = binlogOn ? (root + '/binlog/mysql-bin') : '-';
+    var binlogFormat = binlogOn ? 'ROW' : '-';
+    var gtidMode = gtidOn ? 'ON' : (binlogOn ? 'OFF' : '-');
+    var enforceGtid = gtidOn ? 'ON' : (binlogOn ? 'OFF' : '-');
+    var logSlaveUpdates = gtidOn ? 'ON' : (binlogOn ? 'OFF' : '-');
+    return 'server_id：<code>' + sid + '</code><br>'
+        + 'log_bin：<code>' + logBin + '</code><br>'
+        + 'binlog_format：<code>' + binlogFormat + '</code><br>'
+        + 'gtid_mode：<code>' + gtidMode + '</code><br>'
+        + 'enforce_gtid_consistency：<code>' + enforceGtid + '</code><br>'
+        + 'log_slave_updates：<code>' + logSlaveUpdates + '</code>';
+}
+
+function mysqlPathPreviewHtml(port, connectHost, enableBinlog, enableGtid, serverId) {
+    return '<div class="mysql-path-preview-wrap">'
+        + '<div class="mysql-path-preview-col mysql-path-preview-col-left">'
+        + mysqlPathPreviewLeftHtml(port)
+        + '</div>'
+        + '<div class="mysql-path-preview-col mysql-path-preview-col-right">'
+        + mysqlPathPreviewRightHtml(port, enableBinlog, enableGtid, serverId)
+        + '</div>'
+        + '</div>';
 }
 
 var mysqlDeploySwitchState = {binlog: true, gtid: true};
@@ -243,7 +277,16 @@ function bindMysqlDeploySwitchEvents() {
     });
     deployMysqlSwitchBound = true;
 }
+function syncMysqlInstanceRootInput() {
+    var $input = $('#f-instance-root');
+    if (!$input.length || !isMysqlDeployJobType($('#f-job-type').val())) {
+        return;
+    }
+    $input.val(mysqlInstanceRoot($('#f-port').val()));
+}
+
 function updateMysqlPathPreview() {
+    syncMysqlInstanceRootInput();
     var $cell = $('#mysql-path-preview-cell');
     if (!$cell.length) {
         return;
@@ -257,8 +300,100 @@ function updateMysqlPathPreview() {
     });
 }
 
+function profileMajorVersion(profileCode) {
+    for (var i = 0; i < profiles.length; i++) {
+        if (profiles[i].profile_code === profileCode) {
+            return profiles[i].major_version || '';
+        }
+    }
+    return '';
+}
+
+function syncParamTemplatePanel() {
+    var $row = $('#mysql-param-template-row');
+    if (!$row.length) {
+        return;
+    }
+    var isMysql = isMysqlDeployJobType($('#f-job-type').val());
+    if (!isMysql) {
+        $row.hide();
+        $('#f-param-template-wrap').html(
+            '<select id="f-param-template" class="layui-input" disabled>'
+            + '<option value="">请先选择版本档案</option></select>'
+        );
+        return;
+    }
+    $row.show();
+    var profileCode = ($('#f-profile').val() || '').trim();
+    var major = profileMajorVersion(profileCode);
+    if (profileCode && major) {
+        loadParamTemplateTitles(major);
+        return;
+    }
+    $('#f-param-template-wrap').html(
+        '<select id="f-param-template" class="layui-input" disabled>'
+        + '<option value="">请先选择版本档案</option></select>'
+    );
+}
+
+function buildParamTemplateTitleSelect(list, selectedTitle) {
+    var html = '<select id="f-param-template" class="layui-input">';
+    html += '<option value="">不选用模板</option>';
+    for (var i = 0; i < list.length; i++) {
+        var item = list[i];
+        var selected = String(item.title) === String(selectedTitle || '') ? ' selected' : '';
+        var suffix = item.is_default ? ' (默认)' : '';
+        html += '<option value="' + escHtml(item.title) + '"' + selected + '>'
+            + escHtml(item.title) + suffix + '</option>';
+    }
+    html += '</select>';
+    return html;
+}
+
+function escHtml(text) {
+    return String(text || '')
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
+function loadParamTemplateTitles(majorVersion, selectedTitle) {
+    var $wrap = $('#f-param-template-wrap');
+    if (!$wrap.length || !majorVersion) {
+        return;
+    }
+    $wrap.html('<select id="f-param-template" class="layui-input" disabled>'
+        + '<option value="">加载中...</option></select>');
+    $.getJSON(
+        '/db-deploy/mysql-param-template/api/?scope=options&major_version='
+            + encodeURIComponent(majorVersion),
+        function(res) {
+            if (res.code !== 0) {
+                $wrap.html('<select id="f-param-template" class="layui-input" disabled>'
+                    + '<option value="">加载失败</option></select>');
+                return;
+            }
+            var list = res.data || [];
+            if (!selectedTitle && list.length) {
+                for (var i = 0; i < list.length; i++) {
+                    if (list[i].is_default) {
+                        selectedTitle = list[i].title;
+                        break;
+                    }
+                }
+            }
+            $wrap.html(buildParamTemplateTitleSelect(list, selectedTitle));
+        }
+    ).fail(function() {
+        $wrap.html('<select id="f-param-template" class="layui-input" disabled>'
+            + '<option value="">加载失败</option></select>');
+    });
+}
+
 function buildMysqlPanelRows() {
-    return formRow2(
+    return '<tbody>'
+        + formRow2(
             'Binlog',
             '<input type="checkbox" id="f-enable-binlog" lay-skin="switch" lay-text="开启|关闭" lay-filter="f-enable-binlog" checked>',
             'GTID',
@@ -269,7 +404,8 @@ function buildMysqlPanelRows() {
         + '</td></tr>'
         + formRow2('root密码', '<input id="f-root-password" type="text" class="layui-input">', '运维账号', '<input id="f-mysql-admin-name" class="layui-input" value="dba_admin">')
         + formRow2('运维密码', '<input id="f-mysql-admin-password" type="text" class="layui-input">', '授权主机', '<input id="f-grant-host" class="layui-input" value="%">')
-        + formRow2('备注', '<input id="f-mysql-remark" class="layui-input">', '', '');
+        + '<tr><td class="deploy-label">备注</td><td class="deploy-field" colspan="3"><input id="f-mysql-remark" class="layui-input"></td></tr>'
+        + '</tbody>';
 }
 
 function buildOraclePanelRows() {
@@ -281,6 +417,7 @@ function buildOraclePanelRows() {
 
 function buildCreateFormHtml(defaultJobType, profList) {
     var isOracle = defaultJobType === 'oracle_standalone';
+    var paramTemplateRowStyle = isOracle ? ' style="display:none;"' : '';
     return '<div class="deploy-form-wrap">'
         + '<table class="layui-table deploy-form-table" lay-size="sm"><tbody>'
         + formRow2(
@@ -299,11 +436,23 @@ function buildCreateFormHtml(defaultJobType, profList) {
             '端口',
             '<input id="f-port" class="layui-input" value="' + (isOracle ? '1521' : '3306') + '">'
         )
+        + '<tr id="mysql-param-template-row"' + paramTemplateRowStyle + '>'
+        + '<td class="deploy-label">参数模板</td>'
+        + '<td class="deploy-field">'
+        + '<div id="f-param-template-wrap">'
+        + '<select id="f-param-template" class="layui-input" disabled>'
+        + '<option value="">请先选择版本档案</option></select>'
+        + '</div></td>'
+        + '<td class="deploy-label">实例目录</td>'
+        + '<td class="deploy-field">'
+        + '<input id="f-instance-root" class="layui-input" readonly value="/data/mysql/db3306">'
+        + '</td>'
+        + '</tr>'
         + '</tbody></table>'
         + '<form class="layui-form" id="panel-mysql" lay-filter="deploy-mysql-panel" style="' + (isOracle ? 'display:none;' : '') + '">'
-        + '<table class="layui-table deploy-form-table" lay-size="sm"><tbody>'
+        + '<table class="layui-table deploy-form-table" lay-size="sm">'
         + buildMysqlPanelRows()
-        + '</tbody></table></form>'
+        + '</table></form>'
         + '<div id="panel-oracle" style="' + (isOracle ? '' : 'display:none;') + '">'
         + '<table class="layui-table deploy-form-table" lay-size="sm"><tbody>'
         + buildOraclePanelRows()
@@ -336,6 +485,7 @@ function switchDeployPanel(jobType) {
         updateMysqlPathPreview();
     }
     applyConnectHostFieldMode(jobType);
+    syncParamTemplatePanel();
 }
 
 function bindCreateFormEvents() {
@@ -374,6 +524,9 @@ function bindCreateFormEvents() {
                 }
             }
         }
+        if (isMysqlDeployJobType($('#f-job-type').val())) {
+            syncParamTemplatePanel();
+        }
     });
 }
 
@@ -392,7 +545,7 @@ function openCreateForm() {
     var idx = layer.open({
         type: 1,
         title: '新建数据库部署',
-        area: ['1024px', '730px'],
+        area: ['1024px', '720px'],
         content: html,
         btn: ['提交', '取消'],
         success: function(layero) {
@@ -400,6 +553,7 @@ function openCreateForm() {
             bindCreateFormEvents();
             renderMysqlSwitches();
             applyConnectHostFieldMode(defaultJobType);
+            syncParamTemplatePanel();
         },
         end: function() {
             $(document).off('change.deployHost change.deployProfile input.deployPort change.deployPort');
@@ -441,6 +595,11 @@ function openCreateForm() {
                 }
             };
             if (jobType === 'mysql_standalone') {
+                body.params.meta = {};
+                var tplTitle = ($('#f-param-template').val() || '').trim();
+                if (tplTitle) {
+                    body.params.meta.mysql_param_template_title = tplTitle;
+                }
                 body.params.config = {
                     enable_binlog: isMysqlBinlogEnabled(),
                     enable_gtid: isMysqlGtidEnabled()

@@ -10,8 +10,11 @@ from .models import DatabaseInstance
 from .deploy_param_template_services import (
     create_mysql_param_template,
     delete_mysql_param_template,
+    get_mysql_param_template_by_code,
+    get_mysql_param_template_by_title,
     get_mysql_param_template_detail,
     get_mysql_param_template_form_options,
+    get_mysql_param_template_title_options,
     list_mysql_param_templates,
     update_mysql_param_template,
 )
@@ -343,6 +346,20 @@ def mysql_param_template_list_view(request):
 def mysql_param_template_api_view(request):
     if request.method == "GET":
         detail_id = request.GET.get("id", "").strip()
+        template_code = request.GET.get("code", "").strip()
+        template_title = request.GET.get("title", "").strip()
+        scope = request.GET.get("scope", "").strip()
+        major_version = _mysql_major_filter(request)
+        if scope == "options":
+            if not major_version:
+                return JsonResponse({"code": 1, "msg": "请指定 major_version"}, status=400)
+            return _json_service(get_mysql_param_template_title_options, major_version)
+        if template_title:
+            if not major_version:
+                return JsonResponse({"code": 1, "msg": "请指定 major_version"}, status=400)
+            return _json_service(get_mysql_param_template_by_title, template_title, major_version)
+        if template_code:
+            return _json_service(get_mysql_param_template_by_code, template_code)
         if detail_id:
             try:
                 return _json_service(get_mysql_param_template_detail, int(detail_id))

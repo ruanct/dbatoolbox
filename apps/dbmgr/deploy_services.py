@@ -149,6 +149,12 @@ def _validate_create_body(body: dict[str, Any]) -> dict[str, Any]:
     meta = user_params.get("meta") if isinstance(user_params.get("meta"), dict) else {}
     meta.setdefault("job_type", job_type)
     meta["version_profile_code"] = profile_code
+    template_code = (meta.get("mysql_param_template_code") or body.get("mysql_param_template_code") or "").strip()
+    template_title = (meta.get("mysql_param_template_title") or body.get("mysql_param_template_title") or "").strip()
+    if template_code:
+        meta["mysql_param_template_code"] = template_code
+    if template_title:
+        meta["mysql_param_template_title"] = template_title
     user_params["meta"] = meta
 
     cmdb = user_params.setdefault("cmdb", {})
