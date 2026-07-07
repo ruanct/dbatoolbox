@@ -10,7 +10,7 @@
 
 ```text
 网络层  → 目标端口是否被监听、占用方是谁
-实例层  → /data/mysql{port}/、mysqld{port}.service
+实例层  → /data/mysql/db{port}/、mysqld{port}.service
 软件层  → /usr/local/mysql（软链）、package_ref 解压目录、/etc/profile PATH
 ```
 
@@ -107,6 +107,6 @@ ls -l /usr/local/mysql
 /usr/local/mysql/bin/mysqld --version
 ss -lntp | grep :<port>
 systemctl status mysqld<port>
-ls -la /data/mysql<port>/data/mysql 2>/dev/null
+ls -la /data/mysql/db<port>/data/mysql 2>/dev/null
 grep DBATOOLBOX /etc/profile
 ```

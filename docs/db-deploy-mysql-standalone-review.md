@@ -8,7 +8,7 @@
 
 - **9 步串行**：`precheck` → `prepare` → `install` → `configure` → `initialize` → `start` → `post_config` → `verify` → `register_cmdb`
 - **软件共享**：`/usr/local/mysql` 软链 → `package_ref` 目录；同机仅一个 major
-- **实例隔离**：`/data/mysql{port}`、`mysqld{port}.service`、独立端口
+- **实例隔离**：`/data/mysql/db{port}`、`mysqld{port}.service`、独立端口
 - **默认**：Binlog + GTID 开启；引导期 `127.0.0.1`，设密后 `0.0.0.0`
 
 ---
@@ -40,6 +40,7 @@
 | 项 | 说明 |
 |----|------|
 | `min_memory_gb` | Profile 声明未在 precheck 执行 |
+| 参数模板 | ✅ `DbDeployMysqlParamTemplate` CRUD + 部署表单选用 |
 | `user_repl` | 未自动创建复制账号（从库场景见 replica 指南） |
 | `listener_host` | `DatabaseInstanceHost` 未写入，VIP 探测靠回退逻辑 |
 | DBA 密码 | 后端非必填，空密码可跳过 DBA 创建 |
@@ -52,14 +53,14 @@
 | 步骤 output 脱敏 | Ansible 失败日志可能含敏感信息 |
 | 部署后 probe | `register_cmdb` 后未自动探测实例在线状态 |
 | 执行中取消 | 仅 `pending` 可 cancel；worker 失联可能卡在 `running` |
-| my.cnf 模板化 | 仍为 `site.yml` 内联；见 [db-deploy-mysql-multiversion-tasks.md](./db-deploy-mysql-multiversion-tasks.md) |
+| my.cnf 生成 | `build_mysql_cnf_sections()` + `config.cnf_sections`；Jinja2 `my.cnf.j2` 仍为规划项 |
 | `mysql_replica` | 从库任务类型未实现 |
 
 ---
 
 ## 4. 从库衔接（未实现）
 
-单实例已具备 GTID+binlog、DBA 复制权限、server_id；**缺少** `user_repl`、复制参数模板、`mysql_replica` Playbook。详见 [db-deploy-mysql-replica-guide.md](./db-deploy-mysql-replica-guide.md)。
+单实例已具备 GTID+binlog、DBA 复制权限、server_id、运行参数模板合并、`post_config` semi-sync master（Binlog 开启时）；**缺少** `user_repl`、`mysql_replica` Playbook。详见 [db-deploy-mysql-replica-guide.md](./db-deploy-mysql-replica-guide.md)。
 
 ---
 
