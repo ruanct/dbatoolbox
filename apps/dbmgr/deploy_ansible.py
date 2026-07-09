@@ -115,6 +115,8 @@ def run_deploy_playbook_step(
             "--tags", step_tag,
             "-e", f"@{vars_path}",
         ]
+        if python_interpreter:
+            cmd.extend(["-e", f"ansible_python_interpreter={python_interpreter}"])
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
         stdout = proc.stdout.strip()
         try:

@@ -319,6 +319,7 @@ Oracle Playbook 步骤编码相同，实现程度为 MVP（见 §8）。
 - 存入 `Job.params` 时可加密或任务完成后擦除明文，仅保留「已创建账号」标记。
 - 步骤日志、Ansible output **必须脱敏**后再写 `DbDeployJobStep.output`。
 - 成功后写入 `DatabaseAccount`，与现有实例账号维护一致。
+- **`mysql_replica` 特例**：表单不要求 `root_password`；`resolve` 时从主库 CMDB 读取 `user_adm / root@localhost` 写入 `resolved_params.credentials.root_account`，供 `repl_setup` 连接从库 socket（详见 [db-deploy-mysql-replica-guide.md](./db-deploy-mysql-replica-guide.md) §2.2、§7.1）。
 
 #### ⑤ 场景上下文参数（扩展场景）
 
@@ -493,6 +494,18 @@ ansible-playbook ... -e @vars.json --tags precheck
 | root_password | 账号 | 是 | 用户填 | 初始化 + `user_adm` 台账 |
 | admin_account | 账号 | 否 | 用户填 | `user_dba` 台账 |
 
+### 4.8.1 MySQL 从库 — 参数字段清单（MVP）
+
+| 字段 | 分组 | 必填 | 默认来源 | CMDB / 用途 |
+|------|------|------|----------|-------------|
+| replication_cluster_id | 复制 | 是 | 用户选复制集 | `context`；自动带出主库 |
+| repl_account_id | 账号 | 是 | 主库 `user_repl` 列表 | `credentials.repl_account`；`CHANGE MASTER` 的复制用户 |
+| dump_account_id | 账号 | 否 | 主库默认 `user_dba` | `credentials.dump_account`；`mysqldump` 连主库 |
+| （无）root_password | 账号 | — | **主库台账** `user_adm/root@localhost` | `credentials.root_account`；`repl_setup` 连从库 socket |
+| port | 连接 | 是 | 用户填（默认可 3306） | 从库监听端口 |
+
+> 从库不要求表单填写 root / DBA 密码；`repl_setup` 使用主库已登记的 root 密码操作从库本地实例。完整流程见 [db-deploy-mysql-replica-guide.md](./db-deploy-mysql-replica-guide.md)。
+
 ### 4.9 Oracle 单实例 — 参数字段清单（MVP）
 
 | 字段 | 分组 | 必填 | 默认来源 | CMDB / 用途 |
@@ -572,7 +585,7 @@ ansible-playbook ... -e @vars.json --tags precheck
 |------|----------|----------|-----------|
 | MySQL 单实例 | `mysql_standalone` | 无 | standalone + 1 deploy_host |
 | Oracle 单实例 | `oracle_standalone` | 无 | standalone + 1 deploy_host |
-| MySQL 从库 | `mysql_replica` | 已有主库 + 复制集 | **未实现**（规划，见 replica 指南） |
+| MySQL 从库 | `mysql_replica` | 已有主库 + 复制集 | replication / slave + 复制主库账号台账（见 replica 指南） |
 | MGR 新成员 | `mysql_mgr_member` | 已有 MGR 集群（至少 1 个 seed） | ha_cluster + cluster_style=mgr + 新 deploy_host |
 | Oracle RAC 节点 | `oracle_rac_node` | 已有 RAC 集群 + Grid | ha_cluster + cluster_style=rac + 新 deploy_host |
 

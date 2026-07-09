@@ -1,0 +1,482 @@
+---
+# MySQL 从库部署：在单实例 playbook 基础上扩展复制相关 tag。
+# 单实例 post_config / verify 步骤不会出现在从库 Job 步骤列表中。
+- import_playbook: ../standalone/site.yml
+
+- hosts: targets
+  become: true
+  gather_facts: false
+  vars:
+    d: "{{ deploy }}"
+    mysql_basedir: "{{ d.install.basedir | default('/usr/local/mysql') }}"
+    mysql_port: "{{ d.cmdb.port | default(3306) }}"
+    mysql_instance_root: "{{ d.install.instance_root | default('/data/mysql/db' ~ mysql_port) }}"
+    mysql_datadir: "{{ d.install.datadir | default(mysql_instance_root ~ '/data') }}"
+    mysql_socket: "{{ d.install.socket | default(mysql_instance_root ~ '/mysql.sock') }}"
+    mysql_cnf_path: "{{ d.install.cnf_path | default(mysql_instance_root ~ '/my.cnf') }}"
+    mysql_service_name: "{{ d.install.service_name | default('mysqld' ~ mysql_port) }}"
+    mysql_profile_major: "{{ d.profile.major_version | default('5.7') }}"
+    mysql_job_id: "{{ d.meta.deploy_job_id | default(0) }}"
+    mysql_master_host: "{{ d.context.master_host }}"
+    mysql_master_port: "{{ d.context.master_port | default(3306) }}"
+    mysql_same_host: "{{ d.context.same_host_as_master | default(false) | bool }}"
+    mysql_dump_user: "{{ d.credentials.dump_account.account_name }}"
+    mysql_dump_pswd: "{{ d.credentials.dump_account.account_pswd }}"
+    mysql_dump_pswd_sql: "{{ d.credentials.dump_account.account_pswd | replace(\"'\", \"''\") }}"
+    mysql_repl_user: "{{ d.credentials.repl_account.account_name }}"
+    mysql_repl_pswd: "{{ d.credentials.repl_account.account_pswd }}"
+    mysql_root_user: "{{ (d.credentials.root_account | default({})).account_name | default('root') }}"
+    mysql_root_pswd: "{{ d.credentials.root_account.account_pswd }}"
+    mysql_slave_server_id: "{{ d.config.server_id }}"
+    mysql_master_server_id: "{{ d.context.master_runtime.server_id | default('') }}"
+    mysql_dump_cnf: "/tmp/dbatoolbox_replica_dump_{{ mysql_job_id }}.cnf"
+    mysql_repl_cnf: "/tmp/dbatoolbox_replica_repl_{{ mysql_job_id }}.cnf"
+    mysql_slave_admin_cnf: "/tmp/dbatoolbox_replica_slave_admin_{{ mysql_job_id }}.cnf"
+    mysql_slave_root_cnf: "/tmp/dbatoolbox_replica_slave_root_{{ mysql_job_id }}.cnf"
+    mysql_dump_sql_path: "/tmp/mysql_replica_{{ mysql_job_id }}.sql"
+    mysql_local_grant_sql_path: "/tmp/dbatoolbox_replica_local_grant_{{ mysql_job_id }}.sql"
+    mysql_force_rebuild: "{{ d.context.force_rebuild | default(false) | bool }}"
+
+  tasks:
+    - name: "[precheck] 检查 MySQL 客户端是否可用（从库主机）"
+      tags: [precheck]
+      stat:
+        path: "{{ mysql_basedir }}/bin/mysql"
+      register: replica_mysql_client
+
+    - name: "[precheck] 探测主库端口可达"
+      tags: [precheck]
+      wait_for:
+        host: "{{ mysql_master_host }}"
+        port: "{{ mysql_master_port | int }}"
+        timeout: 15
+        state: started
+
+    - name: "[precheck] 同机部署时从库端口不能与主库相同"
+      tags: [precheck]
+      fail:
+        msg: "主从在同一主机上，从库端口 {{ mysql_port }} 不能与主库端口 {{ mysql_master_port }} 相同。"
+      when:
+        - mysql_same_host | bool
+        - (mysql_port | int) == (mysql_master_port | int)
+
+    - name: "[precheck] 检查从库数据目录残留文件"
+      tags: [precheck]
+      shell: |
+        set -o pipefail
+        DIR="{{ mysql_datadir }}"
+        if [ ! -d "$DIR" ]; then
+          echo "empty"
+          exit 0
+        fi
+        if [ -z "$(ls -A "$DIR" 2>/dev/null)" ]; then
+          echo "empty"
+        else
+          echo "has_files"
+        fi
+      args:
+        executable: /bin/bash
+      register: replica_datadir_probe
+      changed_when: false
+
+    - name: "[precheck] 从库数据目录存在实例文件"
+      tags: [precheck]
+      fail:
+        msg: >-
+          从库主机在目录 {{ mysql_datadir }} 上存在实例文件，请先删除实例文件
+          （例如 rm -rf {{ mysql_instance_root }}/*）。
+      when:
+        - (replica_datadir_probe.stdout | trim) == 'has_files'
+        - not (mysql_force_rebuild | bool)
+
+    - name: "[repl_master_probe] 部署主库 DBA 探测凭据"
+      tags: [repl_master_probe]
+      copy:
+        dest: "{{ mysql_dump_cnf }}"
+        mode: "0600"
+        content: |
+          [client]
+          host={{ mysql_master_host }}
+          port={{ mysql_master_port }}
+          user={{ mysql_dump_user }}
+          password="{{ mysql_dump_pswd | replace('"', '\\"') }}"
+
+    - name: "[repl_master_probe] 输出主库运行参数 JSON"
+      tags: [repl_master_probe]
+      shell: |
+        set -o pipefail
+        MYSQL="{{ mysql_basedir }}/bin/mysql"
+        CNF="{{ mysql_dump_cnf }}"
+        read_var() { "$MYSQL" --defaults-extra-file="$CNF" -Nse "SELECT @@${1}"; }
+        VERSION=$("$MYSQL" --defaults-extra-file="$CNF" -Nse "SELECT VERSION()")
+        LOG_BIN=$(read_var log_bin)
+        GTID_MODE=$(read_var gtid_mode)
+        ENFORCE_GTID=$(read_var enforce_gtid_consistency)
+        LCTN=$(read_var lower_case_table_names)
+        BCHK=$(read_var binlog_checksum)
+        BFORMAT=$(read_var binlog_format)
+        LSV=$(read_var log_slave_updates)
+        CS=$(read_var character_set_server)
+        COLL=$(read_var collation_server)
+        SQLMODE=$("$MYSQL" --defaults-extra-file="$CNF" -Nse "SELECT @@sql_mode")
+        SID=$(read_var server_id)
+        AUTH=$("$MYSQL" --defaults-extra-file="$CNF" -Nse "SELECT @@default_authentication_plugin" 2>/dev/null || true)
+        TWSE=$("$MYSQL" --defaults-extra-file="$CNF" -Nse "SELECT @@transaction_write_set_extraction" 2>/dev/null || true)
+        if ! echo "$VERSION" | grep -q "^{{ mysql_profile_major }}\\."; then
+          echo "主库 VERSION=$VERSION 与 Profile major={{ mysql_profile_major }} 不一致" >&2
+          exit 1
+        fi
+        if [ "$LOG_BIN" != "1" ] && [ "$(echo "$LOG_BIN" | tr '[:upper:]' '[:lower:]')" != "on" ]; then
+          echo "主库未开启 Binlog (log_bin=$LOG_BIN)" >&2
+          exit 1
+        fi
+        if [ "$(echo "$GTID_MODE" | tr '[:upper:]' '[:lower:]')" != "on" ]; then
+          echo "第一期不支持非 GTID 主库 (gtid_mode=$GTID_MODE)" >&2
+          exit 1
+        fi
+        if [ "$(echo "$ENFORCE_GTID" | tr '[:upper:]' '[:lower:]')" != "on" ]; then
+          echo "主库 enforce_gtid_consistency 未开启 ($ENFORCE_GTID)" >&2
+          exit 1
+        fi
+        if [ "$LCTN" != "1" ]; then
+          echo "主库 lower_case_table_names=$LCTN，平台要求为 1" >&2
+          exit 1
+        fi
+        if [ "$BCHK" != "CRC32" ]; then
+          echo "主库 binlog_checksum=$BCHK，平台要求 CRC32" >&2
+          exit 1
+        fi
+        if [ "{{ mysql_profile_major }}" = "8.0" ] && [ -n "$TWSE" ] && [ "$TWSE" != "XXHASH64" ]; then
+          echo "主库 transaction_write_set_extraction=$TWSE，平台要求 XXHASH64" >&2
+          exit 1
+        fi
+        if [ -n "{{ mysql_slave_server_id }}" ] && [ "$SID" = "{{ mysql_slave_server_id }}" ]; then
+          echo "从库计划 server_id={{ mysql_slave_server_id }} 与主库 @@server_id 相同，请调整从库端口或联系 DBA" >&2
+          exit 1
+        fi
+        python3 - <<PY
+        import json
+        data = {
+            "version": """$VERSION""",
+            "log_bin": """$LOG_BIN""",
+            "gtid_mode": """$GTID_MODE""",
+            "enforce_gtid_consistency": """$ENFORCE_GTID""",
+            "lower_case_table_names": """$LCTN""",
+            "binlog_checksum": """$BCHK""",
+            "binlog_format": """$BFORMAT""",
+            "log_slave_updates": """$LSV""",
+            "character_set_server": """$CS""",
+            "collation_server": """$COLL""",
+            "sql_mode": """$SQLMODE""",
+            "server_id": """$SID""",
+            "default_authentication_plugin": """$AUTH""",
+            "transaction_write_set_extraction": """$TWSE""",
+        }
+        print("MASTER_RUNTIME_JSON=" + json.dumps(data, ensure_ascii=False))
+        PY
+      args:
+        executable: /bin/bash
+      register: replica_master_runtime_out
+      changed_when: false
+
+    - name: "[repl_bootstrap] 部署 DBA 探测凭据"
+      tags: [repl_bootstrap]
+      copy:
+        dest: "{{ mysql_dump_cnf }}"
+        mode: "0600"
+        content: |
+          [client]
+          host={{ mysql_master_host }}
+          port={{ mysql_master_port }}
+          user={{ mysql_dump_user }}
+          password="{{ mysql_dump_pswd | replace('"', '\\"') }}"
+
+    - name: "[repl_bootstrap] 部署 repl 探测凭据"
+      tags: [repl_bootstrap]
+      copy:
+        dest: "{{ mysql_repl_cnf }}"
+        mode: "0600"
+        content: |
+          [client]
+          host={{ mysql_master_host }}
+          port={{ mysql_master_port }}
+          user={{ mysql_repl_user }}
+          password="{{ mysql_repl_pswd | replace('"', '\\"') }}"
+
+    - name: "[repl_bootstrap] 复制账号连通性 precheck"
+      tags: [repl_bootstrap]
+      shell: |
+        set -o pipefail
+        {{ mysql_basedir }}/bin/mysql --defaults-extra-file={{ mysql_repl_cnf | quote }} -e "SELECT 1"
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: "[repl_bootstrap] DBA 账号连通性 precheck"
+      tags: [repl_bootstrap]
+      shell: |
+        set -o pipefail
+        {{ mysql_basedir }}/bin/mysql --defaults-extra-file={{ mysql_dump_cnf | quote }} -e "SELECT 1"
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: "[repl_bootstrap] mysqldump 全量导出"
+      tags: [repl_bootstrap]
+      shell: |
+        set -o pipefail
+        {{ mysql_basedir }}/bin/mysqldump \
+          --defaults-extra-file={{ mysql_dump_cnf | quote }} \
+          --single-transaction \
+          --set-gtid-purged=ON \
+          --master-data=2 \
+          --all-databases \
+          -r {{ mysql_dump_sql_path | quote }}
+      args:
+        executable: /bin/bash
+      register: replica_mysqldump
+
+    - name: "[repl_bootstrap] 生成本地 DBA 授权 SQL"
+      tags: [repl_bootstrap]
+      copy:
+        dest: "{{ mysql_local_grant_sql_path }}"
+        mode: "0600"
+        content: |
+          FLUSH PRIVILEGES;
+          CREATE USER IF NOT EXISTS '{{ mysql_dump_user }}'@'localhost' IDENTIFIED BY '{{ mysql_dump_pswd_sql }}';
+          CREATE USER IF NOT EXISTS '{{ mysql_dump_user }}'@'127.0.0.1' IDENTIFIED BY '{{ mysql_dump_pswd_sql }}';
+          {% for grant_sql in d.credentials.dba_grant_statements | default([]) %}
+          {{ grant_sql | replace('__DBA_USER__', mysql_dump_user) | replace('__DBA_HOST__', 'localhost') }}
+          {% endfor %}
+          {% for grant_sql in d.credentials.dba_grant_statements | default([]) %}
+          {{ grant_sql | replace('__DBA_USER__', mysql_dump_user) | replace('__DBA_HOST__', '127.0.0.1') }}
+          {% endfor %}
+          FLUSH PRIVILEGES;
+
+    - name: "[repl_bootstrap] 导入全量数据到从库"
+      tags: [repl_bootstrap]
+      shell: |
+        set -o pipefail
+        {
+          cat {{ mysql_dump_sql_path | quote }}
+          cat {{ mysql_local_grant_sql_path | quote }}
+        } | {{ mysql_basedir }}/bin/mysql -S {{ mysql_socket | quote }} -uroot
+      args:
+        executable: /bin/bash
+
+    - name: "[repl_bootstrap] 部署从库本地管理凭据（导入后使用 DBA 账号）"
+      tags: [repl_bootstrap]
+      copy:
+        dest: "{{ mysql_slave_admin_cnf }}"
+        mode: "0600"
+        content: |
+          [client]
+          user={{ mysql_dump_user }}
+          password="{{ mysql_dump_pswd | replace('"', '\\"') }}"
+          socket={{ mysql_socket }}
+
+    - name: "[repl_bootstrap] 校验导入后本地 DBA 可连接"
+      tags: [repl_bootstrap]
+      shell: |
+        set -o pipefail
+        {{ mysql_basedir }}/bin/mysql --defaults-extra-file={{ mysql_slave_admin_cnf | quote }} -e "SELECT 1"
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: "[repl_bootstrap] 清理 dump 临时文件"
+      tags: [repl_bootstrap]
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ mysql_dump_sql_path }}"
+        - "{{ mysql_local_grant_sql_path }}"
+        - "{{ mysql_dump_cnf }}"
+        - "{{ mysql_repl_cnf }}"
+
+    - name: "[repl_setup] 部署从库本地 root 凭据"
+      tags: [repl_setup]
+      copy:
+        dest: "{{ mysql_slave_root_cnf }}"
+        mode: "0600"
+        content: |
+          [client]
+          user={{ mysql_root_user }}
+          password="{{ mysql_root_pswd | replace('"', '\\"') }}"
+          socket={{ mysql_socket }}
+
+    - name: "[repl_setup] 校验本地 root 可连接"
+      tags: [repl_setup]
+      shell: |
+        set -o pipefail
+        {{ mysql_basedir }}/bin/mysql --defaults-extra-file={{ mysql_slave_root_cnf | quote }} -e "SELECT 1"
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: "[repl_setup,repl_verify] 校正从库 server_id（my.cnf + 重启）"
+      tags: [repl_setup, repl_verify]
+      shell: |
+        set -o pipefail
+        MYSQL="{{ mysql_basedir }}/bin/mysql"
+        CNF="{{ mysql_slave_root_cnf }}"
+        MYCNF="{{ mysql_cnf_path }}"
+        PLANNED="{{ mysql_slave_server_id }}"
+        MASTER="{{ mysql_master_server_id }}"
+        SVC="{{ mysql_service_name }}"
+        LOCAL=$("$MYSQL" --defaults-extra-file="$CNF" -Nse "SELECT @@server_id")
+        if [ -z "$PLANNED" ]; then
+          echo "缺少计划 server_id" >&2
+          exit 1
+        fi
+        if [ "$LOCAL" = "$PLANNED" ] && { [ -z "$MASTER" ] || [ "$LOCAL" != "$MASTER" ]; }; then
+          echo "从库 server_id=$LOCAL 已正确，无需重启"
+          exit 0
+        fi
+        echo "从库当前 server_id=$LOCAL，计划=$PLANNED，主库=$MASTER；更新 my.cnf 并重启"
+        NEED_RESTART=1
+        if grep -qiE '^[[:space:]]*server[-_]id[[:space:]]*=' "$MYCNF"; then
+          sed -i "s/^[[:space:]]*server[-_]id[[:space:]]*=.*/server-id=${PLANNED}/I" "$MYCNF"
+        else
+          printf '\nserver-id=%s\n' "$PLANNED" >> "$MYCNF"
+        fi
+        systemctl restart "$SVC"
+        for i in $(seq 1 30); do
+          if "$MYSQL" --defaults-extra-file="$CNF" -Nse "SELECT 1" >/dev/null 2>&1; then
+            break
+          fi
+          sleep 2
+        done
+        LOCAL=$("$MYSQL" --defaults-extra-file="$CNF" -Nse "SELECT @@server_id")
+        if [ "$LOCAL" != "$PLANNED" ]; then
+          echo "重启后 server_id=$LOCAL 仍与计划 $PLANNED 不一致" >&2
+          exit 1
+        fi
+        if [ -n "$MASTER" ] && [ "$LOCAL" = "$MASTER" ]; then
+          echo "重启后从库 server_id 仍与主库相同 ($MASTER)" >&2
+          exit 1
+        fi
+        echo "从库 server_id 已校正为 $LOCAL"
+        if [ "${NEED_RESTART:-0}" = "1" ]; then
+          if [ "{{ mysql_profile_major }}" = "8.0" ]; then
+            "$MYSQL" --defaults-extra-file="$CNF" -e "START REPLICA;" 2>/dev/null || true
+          else
+            "$MYSQL" --defaults-extra-file="$CNF" -e "START SLAVE;" 2>/dev/null || true
+          fi
+        fi
+      args:
+        executable: /bin/bash
+
+    - name: "[repl_setup] 停止复制线程（幂等）"
+      tags: [repl_setup]
+      shell: |
+        set -o pipefail
+        MYSQL="{{ mysql_basedir }}/bin/mysql"
+        CNF="{{ mysql_slave_root_cnf }}"
+        if [ "{{ mysql_profile_major }}" = "8.0" ]; then
+          "$MYSQL" --defaults-extra-file="$CNF" -e "STOP REPLICA;" 2>/dev/null || true
+          "$MYSQL" --defaults-extra-file="$CNF" -e "RESET REPLICA ALL;" 2>/dev/null || true
+        else
+          "$MYSQL" --defaults-extra-file="$CNF" -e "STOP SLAVE;" 2>/dev/null || true
+          "$MYSQL" --defaults-extra-file="$CNF" -e "RESET SLAVE ALL;" 2>/dev/null || true
+        fi
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: "[repl_setup] 生成 CHANGE MASTER SQL"
+      tags: [repl_setup]
+      copy:
+        dest: "/tmp/dbatoolbox_replica_change_master_{{ mysql_job_id }}.sql"
+        mode: "0600"
+        content: |
+          {% if mysql_profile_major == '8.0' %}
+          CHANGE REPLICATION SOURCE TO
+            SOURCE_HOST='{{ mysql_master_host }}',
+            SOURCE_PORT={{ mysql_master_port }},
+            SOURCE_USER='{{ mysql_repl_user }}',
+            SOURCE_PASSWORD='{{ mysql_repl_pswd | replace("'", "''") }}',
+            SOURCE_AUTO_POSITION=1;
+          START REPLICA;
+          {% else %}
+          CHANGE MASTER TO
+            MASTER_HOST='{{ mysql_master_host }}',
+            MASTER_PORT={{ mysql_master_port }},
+            MASTER_USER='{{ mysql_repl_user }}',
+            MASTER_PASSWORD='{{ mysql_repl_pswd | replace("'", "''") }}',
+            MASTER_AUTO_POSITION=1;
+          START SLAVE;
+          {% endif %}
+
+    - name: "[repl_setup] 执行 CHANGE MASTER"
+      tags: [repl_setup]
+      shell: |
+        set -o pipefail
+        {{ mysql_basedir }}/bin/mysql --defaults-extra-file={{ mysql_slave_root_cnf | quote }} \
+          < /tmp/dbatoolbox_replica_change_master_{{ mysql_job_id }}.sql
+      args:
+        executable: /bin/bash
+
+    - name: "[repl_readonly] 开启只读"
+      tags: [repl_readonly]
+      shell: |
+        set -o pipefail
+        MYSQL="{{ mysql_basedir }}/bin/mysql"
+        CNF="{{ mysql_slave_admin_cnf }}"
+        "$MYSQL" --defaults-extra-file="$CNF" -e "SET GLOBAL read_only = ON;"
+        if [ "{{ mysql_profile_major }}" = "8.0" ]; then
+          "$MYSQL" --defaults-extra-file="$CNF" -e "SET GLOBAL super_read_only = ON;"
+        fi
+      args:
+        executable: /bin/bash
+
+    - name: "[repl_verify] 检查复制状态"
+      tags: [repl_verify]
+      shell: |
+        set -o pipefail
+        MYSQL="{{ mysql_basedir }}/bin/mysql"
+        CNF="{{ mysql_slave_admin_cnf }}"
+        if [ "{{ mysql_profile_major }}" = "8.0" ]; then
+          OUT=$("$MYSQL" --defaults-extra-file="$CNF" -e "SHOW REPLICA STATUS\\G")
+          IO=$(echo "$OUT" | awk -F: '/Replica_IO_Running/{gsub(/ /,"",$2); print $2; exit}')
+          SQL=$(echo "$OUT" | awk -F: '/Replica_SQL_Running/{gsub(/ /,"",$2); print $2; exit}')
+          BEHIND=$(echo "$OUT" | awk -F: '/Seconds_Behind_Source/{gsub(/ /,"",$2); print $2; exit}')
+          IOERR=$(echo "$OUT" | awk -F: '/Last_IO_Error/{sub(/^ /,"",$2); print $2; exit}')
+          SQLERR=$(echo "$OUT" | awk -F: '/Last_SQL_Error/{sub(/^ /,"",$2); print $2; exit}')
+        else
+          OUT=$("$MYSQL" --defaults-extra-file="$CNF" -e "SHOW SLAVE STATUS\\G")
+          IO=$(echo "$OUT" | awk -F: '/Slave_IO_Running/{gsub(/ /,"",$2); print $2; exit}')
+          SQL=$(echo "$OUT" | awk -F: '/Slave_SQL_Running/{gsub(/ /,"",$2); print $2; exit}')
+          BEHIND=$(echo "$OUT" | awk -F: '/Seconds_Behind_Master/{gsub(/ /,"",$2); print $2; exit}')
+          IOERR=$(echo "$OUT" | awk -F: '/Last_IO_Error/{sub(/^ /,"",$2); print $2; exit}')
+          SQLERR=$(echo "$OUT" | awk -F: '/Last_SQL_Error/{sub(/^ /,"",$2); print $2; exit}')
+        fi
+        echo "REPLICATION_STATUS_JSON={\"io_running\":\"$IO\",\"sql_running\":\"$SQL\",\"seconds_behind\":\"$BEHIND\",\"last_io_error\":\"$IOERR\",\"last_sql_error\":\"$SQLERR\"}"
+        if [ "$IO" != "Yes" ] || [ "$SQL" != "Yes" ]; then
+          echo "复制线程未正常运行: IO=$IO SQL=$SQL" >&2
+          exit 1
+        fi
+        if [ -n "$IOERR" ] || [ -n "$SQLERR" ]; then
+          echo "复制存在错误: IO=$IOERR SQL=$SQLERR" >&2
+          exit 1
+        fi
+      args:
+        executable: /bin/bash
+      register: replica_status_out
+      changed_when: false
+
+    - name: "[replica_version_check] 探测从库版本"
+      tags: [replica_version_check]
+      shell: |
+        set -o pipefail
+        {{ mysql_basedir }}/bin/mysql --defaults-extra-file={{ mysql_slave_admin_cnf | quote }} -Nse "SELECT VERSION();"
+      args:
+        executable: /bin/bash
+      register: replica_version_out
+      changed_when: false
+
+    - name: "[replica_version_check] 输出版本"
+      tags: [replica_version_check]
+      debug:
+        msg: "MySQL version={{ replica_version_out.stdout | trim }}"

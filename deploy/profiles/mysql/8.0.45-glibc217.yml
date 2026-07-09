@@ -17,6 +17,7 @@ supported_arch:
   - x86_64
 supported_job_types:
   - mysql_standalone
+  - mysql_replica
 install_method: tar_http
 package_ref: mysql-8.0.45-linux-glibc2.17-x86_64
 media_base_url: "http://10.32.14.211/soft/mysql/tgz/"

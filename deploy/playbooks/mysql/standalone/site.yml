@@ -1,7 +1,7 @@
 ---
 - hosts: targets
   become: true
-  gather_facts: true
+  gather_facts: false
   vars:
     d: "{{ deploy }}"
     mysql_basedir: "{{ d.install.basedir | default('/usr/local/mysql') }}"
@@ -41,6 +41,10 @@
     mysql_semi_sync_master_timeout: 1000
 
   tasks:
+    - name: "[precheck] 采集主机 Facts"
+      tags: [precheck]
+      setup:
+
     - name: "[precheck] 归一化操作系统族"
       tags: [precheck]
       set_fact:

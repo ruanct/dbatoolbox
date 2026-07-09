@@ -1,9 +1,9 @@
 {% extends "base.html" %}
-{% block title %}部署任务详情 - DBAToolbox{% endblock %}
+{% block title %}MySQL从库部署详情 - DBAToolbox{% endblock %}
 
 {% block content %}
 <div class="breadcrumb">
-    数据库管理 / <a href="/db-deploy/">单实例部署</a> / 任务 #{{ job_id }}
+    数据库管理 / 实例部署 / <a href="/db-deploy/mysql-replica/">添加MySQL从库</a> / 任务 #{{ job_id }}
 </div>
 
 <style>
@@ -35,11 +35,10 @@
 
 <div class="layui-card">
     <div class="layui-card-header">
-        <span>单实例部署任务详情</span>
+        <span>MySQL 从库部署详情</span>
         <button class="layui-btn layui-btn-xs layui-btn-primary" style="float:right;margin-top:8px;" id="btn-back">返回列表</button>
         <button class="layui-btn layui-btn-xs layui-btn-danger" style="float:right;margin-top:8px;margin-right:8px;display:none;" id="btn-delete">删除</button>
         <button class="layui-btn layui-btn-xs layui-btn-warm" style="float:right;margin-top:8px;margin-right:8px;display:none;" id="btn-cancel">取消</button>
-        <button class="layui-btn layui-btn-xs layui-btn-danger" style="float:right;margin-top:8px;margin-right:8px;display:none;" id="btn-force-rebuild">强制重建</button>
         <button class="layui-btn layui-btn-xs layui-btn-warm" style="float:right;margin-top:8px;margin-right:8px;display:none;" id="btn-release-endpoint">释放端点</button>
         <button class="layui-btn layui-btn-xs layui-btn-normal" style="float:right;margin-top:8px;margin-right:8px;display:none;" id="btn-retry">重新执行</button>
         <button class="layui-btn layui-btn-xs" style="float:right;margin-top:8px;margin-right:8px;" id="btn-refresh">刷新</button>
@@ -80,7 +79,6 @@
 <script>
 var jobId = {{ job_id }};
 var pollTimer = null;
-var currentStatus = '';
 var lastJobData = null;
 
 function getCookie(name) {
@@ -92,7 +90,7 @@ function postJobAction(action, confirmText, onSuccess) {
     layer.confirm(confirmText, {icon: 3, title: '确认'}, function(index) {
         layer.close(index);
         $.ajax({
-            url: '/db-deploy/api/' + jobId + '/',
+            url: '/db-deploy/mysql-replica/api/' + jobId + '/',
             type: 'POST',
             contentType: 'application/json',
             data: JSON.stringify({action: action}),
@@ -134,29 +132,19 @@ function findFirstFailedStep(steps) {
 
 function buildRetryConfirmText(data) {
     if (!data || data.status !== 'failed') {
-        return '确定重新执行该部署任务吗？';
+        return '确定重新执行该从库部署任务吗？';
     }
     var steps = data.steps || [];
     var failedStep = findFirstFailedStep(steps);
     var succeededCount = countSucceededSteps(steps);
     if (failedStep && succeededCount > 0) {
         return '将从失败步骤「' + failedStep.step_name + '」继续执行，'
-            + '已成功完成的 ' + succeededCount + ' 个步骤将自动跳过（不会重新预检查或初始化）。确定继续吗？';
+            + '已成功完成的 ' + succeededCount + ' 个步骤将自动跳过。确定继续吗？';
     }
-    return '确定重新执行该部署任务吗？';
-}
-
-function buildForceRebuildConfirmText(data) {
-    var root = '-';
-    if (data && data.resolved_params && data.resolved_params.install) {
-        root = data.resolved_params.install.instance_root || root;
-    }
-    return '将停止本任务实例服务并删除目录「' + root + '」，然后从头全量重装。'
-        + '此操作不可恢复，确定继续吗？';
+    return '确定重新执行该从库部署任务吗？';
 }
 
 function updateActionButtons(status, steps, data) {
-    currentStatus = status;
     steps = steps || [];
     data = data || null;
     var showRetry = status === 'pending' || status === 'failed' || status === 'cancelled';
@@ -164,12 +152,6 @@ function updateActionButtons(status, steps, data) {
     var succeededCount = countSucceededSteps(steps);
     var retryLabel = (failedStep && succeededCount > 0) ? '继续执行' : '重新执行';
     $('#btn-retry').text(retryLabel).toggle(showRetry);
-    var showForceRebuild = showRetry
-        && data
-        && data.job_type === 'mysql_standalone'
-        && !data.instance_id
-        && (status === 'failed' || status === 'cancelled');
-    $('#btn-force-rebuild').toggle(showForceRebuild);
     var showReleaseEndpoint = status === 'failed' && !data.instance_id;
     $('#btn-release-endpoint').toggle(showReleaseEndpoint);
     $('#btn-cancel').toggle(status === 'pending');
@@ -185,13 +167,31 @@ function statusColor(status) {
     return '#999';
 }
 
+function bootstrapMethodLabel(method) {
+    if (method === 'mysqldump') return 'mysqldump（第一期）';
+    if (method === 'xtrabackup') return 'XtraBackup';
+    if (method === 'clone') return 'MySQL Clone';
+    return method || '-';
+}
+
 function renderJob(data) {
     lastJobData = data;
+    var ctx = (data.resolved_params && data.resolved_params.context) ? data.resolved_params.context : {};
+    var cmdb = (data.resolved_params && data.resolved_params.cmdb) ? data.resolved_params.cmdb : {};
+    var ins = (data.resolved_params && data.resolved_params.install) ? data.resolved_params.install : {};
+    var cfg = (data.resolved_params && data.resolved_params.config) ? data.resolved_params.config : {};
+    var replStatus = (data.result && data.result.replication_status) ? data.result.replication_status : null;
+
     var rows = [
         ['任务ID', data.id],
         ['部署类型', data.job_type__display],
+        ['主库实例', data.master_instance__display || cmdb.master_instance_name || '-'],
+        ['复制连接', (ctx.master_host || '-') + ':' + (ctx.master_port || '-')],
+        ['CMDB 主库入口', ctx.master_connect_host || '-'],
+        ['全量方式', bootstrapMethodLabel(data.bootstrap_method || ctx.bootstrap_method)],
         ['版本档案', data.version_profile_code],
-        ['目标主机', data.target_host__display],
+        ['从库主机', data.target_host__display],
+        ['从库实例名', cmdb.instance_name || '-'],
         ['环境/业务', data.environment__display + ' / ' + data.business__display],
         ['任务状态', '<span style="color:' + statusColor(data.status) + ';">' + data.status__display + '</span>'],
         ['注册实例', data.instance_id ? ('<a href="/db-instance/">' + data.instance__display + '</a>') : '-'],
@@ -199,27 +199,35 @@ function renderJob(data) {
         ['开始/结束', (data.started_at || '-') + ' ~ ' + (data.finished_at || '-')],
         ['探测版本', (data.result && data.result.detected_version) ? data.result.detected_version : '-']
     ];
-    if (data.job_type === 'mysql_standalone' && data.resolved_params && data.resolved_params.install) {
-        var ins = data.resolved_params.install;
-        var cfg = data.resolved_params.config || {};
-        var port = (data.resolved_params.cmdb && data.resolved_params.cmdb.port) ? data.resolved_params.cmdb.port : '-';
-        rows.push(['监听端口', port]);
-        rows.push(['程序目录', ins.basedir || '-']);
-        rows.push(['参数文件', ins.cnf_path || '-']);
-        rows.push(['数据目录', ins.datadir || '-']);
-        rows.push(['Socket', ins.socket || '-']);
-        rows.push(['错误日志', ins.log_error || '-']);
-        rows.push(['Binlog', cfg.enable_binlog ? ('开启 (' + (ins.log_bin || '-') + ')') : '关闭']);
-        rows.push(['GTID', cfg.enable_gtid ? '开启' : '关闭']);
-        if (cfg.enable_binlog) {
-            rows.push(['server_id', cfg.server_id || '-']);
-            rows.push(['binlog_format', cfg.binlog_format || 'ROW']);
-        }
-        rows.push(['系统服务', (ins.service_name || '-') + '.service']);
+
+    rows.push(['从库端口', cmdb.port || '-']);
+    rows.push(['程序目录', ins.basedir || '-']);
+    rows.push(['参数文件', ins.cnf_path || '-']);
+    rows.push(['数据目录', ins.datadir || '-']);
+    rows.push(['Socket', ins.socket || '-']);
+    rows.push(['系统服务', (ins.service_name || '-') + '.service']);
+    if (cfg.server_id) {
+        rows.push(['server_id', cfg.server_id]);
     }
+    if (ctx.same_host_as_master) {
+        rows.push(['同机部署', '是（复制地址 127.0.0.1）']);
+    }
+
+    if (replStatus) {
+        rows.push(['IO 线程', replStatus.io_running || '-']);
+        rows.push(['SQL 线程', replStatus.sql_running || '-']);
+        rows.push(['复制延迟', replStatus.seconds_behind != null ? replStatus.seconds_behind + 's' : '-']);
+        if (replStatus.last_io_error) {
+            rows.push(['IO 错误', replStatus.last_io_error]);
+        }
+        if (replStatus.last_sql_error) {
+            rows.push(['SQL 错误', replStatus.last_sql_error]);
+        }
+    }
+
     var html = '';
     for (var i = 0; i < rows.length; i++) {
-        html += '<tr><td width="120">' + rows[i][0] + '</td><td>' + rows[i][1] + '</td></tr>';
+        html += '<tr><td width="140">' + rows[i][0] + '</td><td>' + rows[i][1] + '</td></tr>';
     }
     $('#job-info tbody').html(html);
 
@@ -251,42 +259,40 @@ function renderJob(data) {
 }
 
 function loadDetail() {
-    $.getJSON('/db-deploy/api/' + jobId + '/', function(res) {
+    $.getJSON('/db-deploy/mysql-replica/api/' + jobId + '/', function(res) {
         if (res.code === 0) {
             renderJob(res.data);
+        } else {
+            layer.msg(res.msg || '加载失败', {icon: 2});
         }
     });
 }
 
 $('#btn-refresh').on('click', loadDetail);
-$('#btn-back').on('click', function() { window.location.href = '/db-deploy/'; });
+$('#btn-back').on('click', function() { window.location.href = '/db-deploy/mysql-replica/'; });
 $('#btn-retry').on('click', function() {
     postJobAction('retry', buildRetryConfirmText(lastJobData));
-});
-$('#btn-force-rebuild').on('click', function() {
-    postJobAction('force_rebuild', buildForceRebuildConfirmText(lastJobData));
 });
 $('#btn-release-endpoint').on('click', function() {
     postJobAction(
         'release_endpoint',
-        '将把任务标记为「已取消」并释放其占用的连接端点（同 IP:端口 可重新创建任务）。'
-            + '任务记录与步骤日志保留。确定继续吗？'
+        '将把任务标记为「已取消」并释放其占用的连接端点。任务记录与步骤日志保留。确定继续吗？'
     );
 });
 $('#btn-cancel').on('click', function() {
     postJobAction('cancel', '确定取消该待执行任务吗？');
 });
 $('#btn-delete').on('click', function() {
-    layer.confirm('确定删除该部署任务吗？删除后不可恢复。', {icon: 3, title: '确认'}, function(index) {
+    layer.confirm('确定删除该从库部署任务吗？删除后不可恢复。', {icon: 3, title: '确认'}, function(index) {
         layer.close(index);
         $.ajax({
-            url: '/db-deploy/api/' + jobId + '/',
+            url: '/db-deploy/mysql-replica/api/' + jobId + '/',
             type: 'DELETE',
             headers: {'X-CSRFToken': getCookie('csrftoken_dbatoolbox')},
             success: function(r) {
                 if (r.code === 0) {
                     layer.msg(r.msg, {icon: 1}, function() {
-                        window.location.href = '/db-deploy/';
+                        window.location.href = '/db-deploy/mysql-replica/';
                     });
                 } else {
                     layer.msg(r.msg || '删除失败', {icon: 2});

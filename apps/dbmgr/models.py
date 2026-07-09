@@ -327,6 +327,7 @@ class DbDeployJob(models.Model):
 
     JOB_TYPE_CHOICES = [
         ("mysql_standalone", "MySQL 单实例"),
+        ("mysql_replica", "MySQL 从库"),
         ("oracle_standalone", "Oracle 单实例"),
     ]
     STATUS_CHOICES = [

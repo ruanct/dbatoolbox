@@ -15,6 +15,26 @@ urlpatterns = [
     path("db-dashboard/table/", views.db_dashboard_table_view, name="db_dashboard_table"),
     path("db-dashboard/api/", views.db_dashboard_api_view, name="db_dashboard_api"),
     path("db-deploy/", views.deploy_job_list_view, name="db_deploy_list"),
+    path(
+        "db-deploy/mysql-replica/",
+        views.mysql_replica_deploy_list_view,
+        name="db_deploy_mysql_replica_list",
+    ),
+    path(
+        "db-deploy/mysql-replica/api/",
+        views.mysql_replica_deploy_api_view,
+        name="db_deploy_mysql_replica_api",
+    ),
+    path(
+        "db-deploy/mysql-replica/<int:job_id>/",
+        views.mysql_replica_deploy_detail_view,
+        name="db_deploy_mysql_replica_detail",
+    ),
+    path(
+        "db-deploy/mysql-replica/api/<int:job_id>/",
+        views.mysql_replica_deploy_detail_api_view,
+        name="db_deploy_mysql_replica_detail_api",
+    ),
     path("db-deploy/<int:job_id>/", views.deploy_job_detail_view, name="db_deploy_detail"),
     path("db-deploy/api/", views.deploy_job_api_view, name="db_deploy_api"),
     path("db-deploy/api/<int:job_id>/", views.deploy_job_detail_api_view, name="db_deploy_detail_api"),

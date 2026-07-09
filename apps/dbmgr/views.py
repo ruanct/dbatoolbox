@@ -3,8 +3,10 @@ from typing import Any, Callable
 
 from django.contrib.auth.decorators import login_required
 from django.http import JsonResponse
-from django.shortcuts import render
+from django.shortcuts import redirect, render
 from django.views.decorators.http import require_http_methods
+
+from .models import DbDeployJob
 
 from .models import DatabaseInstance
 from .deploy_param_template_services import (
@@ -21,12 +23,15 @@ from .deploy_param_template_services import (
 from .deploy_services import (
     cancel_deploy_job,
     create_deploy_job,
+    create_mysql_replica_deploy_job,
     delete_deploy_job,
     force_rebuild_deploy_job,
     get_deploy_form_options,
     get_deploy_job_detail,
+    get_mysql_replica_form_options,
     list_deploy_jobs,
     list_deploy_profiles,
+    list_mysql_replica_deploy_jobs,
     release_deploy_job_endpoint,
     retry_deploy_job,
 )
@@ -282,7 +287,68 @@ def deploy_job_list_view(request):
 
 
 @login_required
+def mysql_replica_deploy_list_view(request):
+    options = get_mysql_replica_form_options()
+    context = {key: json.dumps(val) for key, val in options.items()}
+    return render(request, "dbmgr/mysql_replica_deploy.html", context)
+
+
+@login_required
+@require_http_methods(["GET", "POST"])
+def mysql_replica_deploy_api_view(request):
+    if request.method == "GET":
+        page, limit, keyword = _page_params(request)
+        return _json_service(list_mysql_replica_deploy_jobs, page=page, limit=limit, keyword=keyword)
+    try:
+        body = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"code": 1, "msg": "无效的请求数据"}, status=400)
+    if not body.get("creator") and request.user.is_authenticated:
+        body["creator"] = request.user.username
+    return _json_service(create_mysql_replica_deploy_job, body)
+
+
+@login_required
+def mysql_replica_deploy_detail_view(request, job_id: int):
+    job = DbDeployJob.objects.filter(id=job_id).only("job_type").first()
+    if not job:
+        return redirect("db_deploy_mysql_replica_list")
+    if job.job_type != "mysql_replica":
+        return redirect("db_deploy_detail", job_id=job_id)
+    return render(request, "dbmgr/mysql_replica_deploy_detail.html", {"job_id": job_id})
+
+
+@login_required
+@require_http_methods(["GET", "POST", "DELETE"])
+def mysql_replica_deploy_detail_api_view(request, job_id: int):
+    job = DbDeployJob.objects.filter(id=job_id).only("job_type").first()
+    if not job:
+        return JsonResponse({"code": 1, "msg": "部署任务不存在"}, status=404)
+    if job.job_type != "mysql_replica":
+        return JsonResponse({"code": 1, "msg": "非 MySQL 从库部署任务"}, status=400)
+    if request.method == "GET":
+        return _json_service(get_deploy_job_detail, job_id)
+    if request.method == "DELETE":
+        return _json_service(delete_deploy_job, job_id)
+    try:
+        body = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"code": 1, "msg": "无效的请求数据"}, status=400)
+    action = (body.get("action") or "").strip()
+    if action == "retry":
+        return _json_service(retry_deploy_job, job_id)
+    if action == "release_endpoint":
+        return _json_service(release_deploy_job_endpoint, job_id)
+    if action == "cancel":
+        return _json_service(cancel_deploy_job, job_id)
+    return JsonResponse({"code": 1, "msg": "不支持的操作"}, status=400)
+
+
+@login_required
 def deploy_job_detail_view(request, job_id: int):
+    job = DbDeployJob.objects.filter(id=job_id).only("job_type").first()
+    if job and job.job_type == "mysql_replica":
+        return redirect("db_deploy_mysql_replica_detail", job_id=job_id)
     return render(request, "dbmgr/deploy_job_detail.html", {"job_id": job_id})
 
 
@@ -304,6 +370,14 @@ def deploy_job_api_view(request):
 @login_required
 @require_http_methods(["GET", "POST", "DELETE"])
 def deploy_job_detail_api_view(request, job_id: int):
+    job = DbDeployJob.objects.filter(id=job_id).only("job_type").first()
+    if not job:
+        return JsonResponse({"code": 1, "msg": "部署任务不存在"}, status=404)
+    if job.job_type == "mysql_replica":
+        return JsonResponse(
+            {"code": 1, "msg": "MySQL 从库任务请使用 /db-deploy/mysql-replica/api/ 接口"},
+            status=400,
+        )
     if request.method == "GET":
         return _json_service(get_deploy_job_detail, job_id)
     if request.method == "DELETE":

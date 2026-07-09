@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 from .base import BaseDeployExecutor
+from .mysql_replica import MysqlReplicaExecutor
 from .mysql_standalone import MysqlStandaloneExecutor
 from .oracle_standalone import OracleStandaloneExecutor
 
 EXECUTOR_REGISTRY: dict[str, type[BaseDeployExecutor]] = {
     "mysql_standalone": MysqlStandaloneExecutor,
+    "mysql_replica": MysqlReplicaExecutor,
     "oracle_standalone": OracleStandaloneExecutor,
 }
 

@@ -1,0 +1,435 @@
+{% extends "base.html" %}
+{% block title %}添加MySQL从库 - DBAToolbox{% endblock %}
+
+{% block content %}
+<div class="breadcrumb">数据库管理 / 实例部署 / 添加MySQL从库</div>
+
+<style>
+.deploy-form-table { margin: 0; }
+.deploy-form-table td.deploy-label {
+    width: 14%;
+    text-align: right;
+    white-space: nowrap;
+    color: #666;
+}
+.deploy-form-table td.deploy-field { width: 36%; }
+.deploy-form-wrap { padding: 15px 20px 5px; max-height: 80vh; overflow-y: auto; }
+.master-info-box {
+    font-size: 12px;
+    color: #666;
+    line-height: 1.9;
+    padding: 8px 12px;
+    background: #fafafa;
+    border: 1px solid #eee;
+    border-radius: 2px;
+}
+.master-info-box code { color: #333; }
+.master-info-empty { color: #999; }
+</style>
+
+<div class="layui-card">
+    <div class="layui-card-header"><span>MySQL 从库部署任务</span></div>
+    <div class="layui-card-body">
+        <div class="layui-form layui-form-item" style="margin-bottom:10px;">
+            <div class="layui-inline">
+                <input type="text" id="search-keyword" placeholder="从库实例名/主库/主机/创建人" class="layui-input" style="width:280px;">
+            </div>
+            <button class="layui-btn" id="btn-search"><i class="layui-icon layui-icon-search"></i> 搜索</button>
+            <button class="layui-btn layui-btn-normal" id="btn-add"><i class="layui-icon layui-icon-add-1"></i> 添加从库</button>
+        </div>
+        <table id="main-table" lay-filter="main-table"></table>
+    </div>
+</div>
+
+<script type="text/html" id="action-bar">
+    <a class="layui-btn layui-btn-xs" lay-event="detail">详情</a>
+</script>
+{% endblock %}
+
+{% block extra_script %}
+<script>
+var hosts = {{ hosts|safe }};
+var environments = {{ environments|safe }};
+var businesses = {{ businesses|safe }};
+var profiles = {{ profiles|safe }};
+var replicationClusters = {{ replication_clusters|safe }};
+var bootstrapMethods = {{ bootstrap_methods|safe }};
+
+function getCookie(name) {
+    var r = document.cookie.match("\\b" + name + "=([^;]*)\\b");
+    return r ? r[1] : '';
+}
+
+function formRow2(label1, field1, label2, field2) {
+    return '<tr>'
+        + '<td class="deploy-label">' + label1 + '</td><td class="deploy-field">' + field1 + '</td>'
+        + '<td class="deploy-label">' + label2 + '</td><td class="deploy-field">' + field2 + '</td>'
+        + '</tr>';
+}
+
+function buildSelect(id, list, val, placeholder, valueKey, labelKey) {
+    valueKey = valueKey || 'value';
+    labelKey = labelKey || 'label';
+    var html = '<select id="' + id + '" class="layui-input">';
+    html += '<option value="">' + placeholder + '</option>';
+    for (var i = 0; i < list.length; i++) {
+        var item = list[i];
+        var v = item[valueKey];
+        var selected = String(v) === String(val) ? ' selected' : '';
+        html += '<option value="' + v + '"' + selected + '>' + item[labelKey] + '</option>';
+    }
+    html += '</select>';
+    return html;
+}
+
+function buildHostSelect(val) {
+    return buildSelect('f-host', hosts.map(function(h) {
+        return {value: h.id, label: h.display_name + ' (' + (h.business_ip || '-') + ')'};
+    }), val, '请选择');
+}
+
+function buildEnvSelect(val) {
+    return buildSelect('f-env', environments.map(function(e) {
+        return {value: e.id, label: e.name};
+    }), val, '请选择');
+}
+
+function buildBizSelect(val) {
+    return buildSelect('f-biz', businesses.map(function(b) {
+        return {value: b.id, label: b.name};
+    }), val, '请选择');
+}
+
+function clusterById(id) {
+    for (var i = 0; i < replicationClusters.length; i++) {
+        if (replicationClusters[i].id === id) return replicationClusters[i];
+    }
+    return null;
+}
+
+function hostById(id) {
+    for (var i = 0; i < hosts.length; i++) {
+        if (hosts[i].id === id) return hosts[i];
+    }
+    return null;
+}
+
+function filterProfilesByMajor(major) {
+    if (!major) return [];
+    return profiles.filter(function(p) {
+        return p.major_version === major;
+    });
+}
+
+function buildClusterSelect(val) {
+    return buildSelect('f-cluster', replicationClusters.map(function(c) {
+        var label = c.name;
+        if (c.primary_instance_name) {
+            label += '（主库: ' + c.primary_instance_name + '）';
+        }
+        return {value: c.id, label: label};
+    }), val, '请选择复制集');
+}
+
+function buildReplAccountSelect(cluster, val) {
+    var accounts = (cluster && cluster.repl_accounts) ? cluster.repl_accounts : [];
+    return buildSelect('f-repl-account', accounts.map(function(a) {
+        var label = a.account_name;
+        if (a.grant_host) {
+            label += '@' + a.grant_host;
+        }
+        return {value: a.id, label: label};
+    }), val, '请选择复制账号', 'value', 'label');
+}
+
+function buildBootstrapSelect(val) {
+    return buildSelect('f-bootstrap', bootstrapMethods, val || 'mysqldump', '请选择', 'value', 'label');
+}
+
+function masterInfoHtml(cluster) {
+    if (!cluster || !cluster.primary_instance_id) {
+        return '<div class="master-info-empty">请选择复制集，系统将自动带出主库信息</div>';
+    }
+    var version = cluster.master_version || '-';
+    var major = cluster.master_major_version || '-';
+    var endpoint = (cluster.master_connect_host || '-') + ':' + (cluster.master_port || '-');
+    var deployHost = cluster.master_deploy_host__display || '-';
+    var warnings = [];
+    if (!cluster.master_version) {
+        warnings.push('主库版本未维护，创建任务将失败');
+    }
+    if (!cluster.has_repl_account) {
+        warnings.push('主库缺少 user_repl 复制账号');
+    }
+    if (!cluster.has_dump_account) {
+        warnings.push('主库缺少默认 DBA 账号（mysqldump 用）');
+    }
+    var warnHtml = warnings.length
+        ? '<div style="color:#FF5722;margin-top:6px;">' + warnings.join('；') + '</div>'
+        : '';
+    return '<div>'
+        + '主库实例：<code>' + cluster.primary_instance_name + '</code><br>'
+        + 'CMDB 连接：<code>' + endpoint + '</code><br>'
+        + '版本：<code>' + version + '</code>（major <code>' + major + '</code>）<br>'
+        + '部署主机：<code>' + deployHost + '</code>'
+        + warnHtml
+        + '</div>';
+}
+
+function refreshProfileOptions(major, selectedCode) {
+    var list = filterProfilesByMajor(major);
+    var $p = $('#f-profile');
+    $p.empty().append('<option value="">请选择</option>');
+    for (var i = 0; i < list.length; i++) {
+        var code = list[i].profile_code;
+        var selected = selectedCode && code === selectedCode ? ' selected' : '';
+        $p.append('<option value="' + code + '"' + selected + '>' + list[i].display_name + '</option>');
+    }
+    if (!selectedCode && list.length === 1) {
+        $p.val(list[0].profile_code);
+    }
+}
+
+function syncMasterPanel() {
+    var clusterId = parseInt($('#f-cluster').val(), 10);
+    var cluster = clusterById(clusterId);
+    $('#master-info-panel').html(masterInfoHtml(cluster));
+
+    var replHtml = buildReplAccountSelect(cluster, '');
+    $('#f-repl-account-wrap').html(replHtml);
+
+    refreshProfileOptions(cluster ? cluster.master_major_version : '', '');
+    syncParamTemplatePanel();
+
+    if (cluster && cluster.master_environment_id) {
+        $('#f-env').val(cluster.master_environment_id);
+    }
+    if (cluster && cluster.master_business_id) {
+        $('#f-biz').val(cluster.master_business_id);
+    }
+}
+
+function syncConnectHostFromHost() {
+    var h = hostById(parseInt($('#f-host').val(), 10));
+    if (h && h.business_ip) {
+        $('#f-connect-host').val(h.business_ip);
+    } else {
+        $('#f-connect-host').val('');
+    }
+}
+
+function syncParamTemplatePanel() {
+    var profileCode = ($('#f-profile').val() || '').trim();
+    var major = '';
+    for (var i = 0; i < profiles.length; i++) {
+        if (profiles[i].profile_code === profileCode) {
+            major = profiles[i].major_version || '';
+            break;
+        }
+    }
+    var $wrap = $('#f-param-template-wrap');
+    var $sel = $('#f-param-template');
+    if (!profileCode || !major) {
+        $wrap.html('<select id="f-param-template" class="layui-input" disabled>'
+            + '<option value="">请先选择版本档案</option></select>');
+        return;
+    }
+    $.get('/db-deploy/mysql-param-template/api/', {
+        scope: 'options',
+        major_version: major
+    }, function(res) {
+        if (res.code !== 0) {
+            $wrap.html('<select id="f-param-template" class="layui-input" disabled>'
+                + '<option value="">加载失败</option></select>');
+            return;
+        }
+        var options = res.data || [];
+        var html = '<select id="f-param-template" class="layui-input">';
+        html += '<option value="">不套用模板</option>';
+        for (var j = 0; j < options.length; j++) {
+            html += '<option value="' + options[j].title + '">' + options[j].title + '</option>';
+        }
+        html += '</select>';
+        $wrap.html(html);
+    });
+}
+
+function buildCreateFormHtml() {
+    return '<div class="deploy-form-wrap">'
+        + '<table class="layui-table deploy-form-table" lay-size="sm"><tbody>'
+        + formRow2('复制集', buildClusterSelect(''), '全量方式', buildBootstrapSelect('mysqldump'))
+        + '<tr><td class="deploy-label">主库信息</td><td class="deploy-field" colspan="3">'
+        + '<div id="master-info-panel" class="master-info-box">' + masterInfoHtml(null) + '</div>'
+        + '</td></tr>'
+        + formRow2(
+            '版本档案',
+            '<select id="f-profile" class="layui-input"><option value="">请先选择复制集</option></select>',
+            '复制账号',
+            '<div id="f-repl-account-wrap">' + buildReplAccountSelect(null, '') + '</div>'
+        )
+        + formRow2('所属环境', buildEnvSelect(''), '所属业务', buildBizSelect(''))
+        + formRow2(
+            '从库实例名',
+            '<input id="f-instance-name" class="layui-input" placeholder="全局唯一">',
+            '从库部署主机',
+            buildHostSelect('')
+        )
+        + formRow2(
+            '连接地址',
+            '<input id="f-connect-host" class="layui-input" readonly placeholder="主机业务 IP（自动填入）">',
+            '从库端口',
+            '<input id="f-port" class="layui-input" value="3306">'
+        )
+        + formRow2(
+            '参数模板',
+            '<div id="f-param-template-wrap">'
+            + '<select id="f-param-template" class="layui-input" disabled>'
+            + '<option value="">请先选择版本档案</option></select></div>',
+            '实例目录',
+            '<input id="f-instance-root" class="layui-input" readonly value="/data/mysql/db3306">'
+        )
+        + '<tr><td class="deploy-label">备注</td><td class="deploy-field" colspan="3">'
+        + '<input id="f-remark" class="layui-input"></td></tr>'
+        + '</tbody></table></div>';
+}
+
+function bindCreateFormEvents() {
+    $('#f-cluster').on('change', syncMasterPanel);
+    $('#f-host').on('change', syncConnectHostFromHost);
+    $('#f-profile').on('change', syncParamTemplatePanel);
+    $('#f-port').on('input change', function() {
+        var p = parseInt($(this).val(), 10) || 3306;
+        $('#f-instance-root').val('/data/mysql/db' + p);
+    });
+}
+
+function openCreateForm() {
+    if (!replicationClusters.length) {
+        layer.msg('请先在「复制集集群」中创建 MySQL 主从复制集并指定主实例', {icon: 0});
+        return;
+    }
+    var html = buildCreateFormHtml();
+    var idx = layer.open({
+        type: 1,
+        title: '为复制集添加 MySQL 从库',
+        area: ['1024px', '680px'],
+        content: html,
+        btn: ['提交', '取消'],
+        success: function() {
+            bindCreateFormEvents();
+            syncMasterPanel();
+        },
+        yes: function() {
+            var clusterId = parseInt($('#f-cluster').val(), 10);
+            var cluster = clusterById(clusterId);
+            if (!cluster || !cluster.primary_instance_id) {
+                layer.msg('请选择有效的复制集', {icon: 2});
+                return false;
+            }
+            syncConnectHostFromHost();
+            if (!$('#f-connect-host').val()) {
+                layer.msg('请先在主机台账维护从库主机业务 IP', {icon: 2});
+                return false;
+            }
+            var replAccountId = parseInt($('#f-repl-account').val(), 10);
+            if (!replAccountId) {
+                layer.msg('请选择主库复制账号', {icon: 2});
+                return false;
+            }
+            var profileCode = ($('#f-profile').val() || '').trim();
+            if (!profileCode) {
+                layer.msg('请选择与主库 major 一致的版本档案', {icon: 2});
+                return false;
+            }
+            var tplTitle = ($('#f-param-template').val() || '').trim();
+            var body = {
+                job_type: 'mysql_replica',
+                version_profile_code: profileCode,
+                target_host_id: parseInt($('#f-host').val(), 10),
+                environment_id: parseInt($('#f-env').val(), 10),
+                business_id: parseInt($('#f-biz').val(), 10),
+                remark: $('#f-remark').val(),
+                params: {
+                    context: {
+                        replication_cluster_id: clusterId,
+                        master_instance_id: cluster.primary_instance_id,
+                        bootstrap_method: $('#f-bootstrap').val() || 'mysqldump'
+                    },
+                    cmdb: {
+                        instance_name: $('#f-instance-name').val(),
+                        connect_host: $('#f-connect-host').val(),
+                        port: parseInt($('#f-port').val(), 10) || 3306
+                    },
+                    credentials: {
+                        repl_account_id: replAccountId
+                    },
+                    meta: {}
+                }
+            };
+            if (tplTitle) {
+                body.params.meta.mysql_param_template_title = tplTitle;
+            }
+            $.ajax({
+                url: '/db-deploy/mysql-replica/api/',
+                type: 'POST',
+                contentType: 'application/json',
+                data: JSON.stringify(body),
+                headers: {'X-CSRFToken': getCookie('csrftoken_dbatoolbox')},
+                success: function(r) {
+                    if (r.code === 0) {
+                        layer.close(idx);
+                        layer.msg(r.msg, {icon: 1, time: 3000});
+                        tableIns.reload();
+                        if (r.data && r.data.job_id) {
+                            window.location.href = '/db-deploy/mysql-replica/' + r.data.job_id + '/';
+                        }
+                    } else {
+                        layer.msg(r.msg || '创建失败', {icon: 2});
+                    }
+                },
+                error: function(xhr) {
+                    layer.msg((xhr.responseJSON || {}).msg || '请求失败', {icon: 2});
+                }
+            });
+            return false;
+        }
+    });
+}
+
+var tableIns;
+layui.use(['table', 'layer'], function() {
+    var table = layui.table;
+    tableIns = table.render({
+        elem: '#main-table',
+        url: '/db-deploy/mysql-replica/api/',
+        page: true,
+        cols: [[
+            {field: 'id', title: 'ID', width: 70},
+            {field: 'master_instance__display', title: '主库', minWidth: 140},
+            {field: 'version_profile_code', title: '版本档案', width: 150},
+            {field: 'target_host__display', title: '从库主机', minWidth: 140},
+            {field: 'instance__display', title: '从库实例', minWidth: 140},
+            {field: 'bootstrap_method', title: '全量方式', width: 110},
+            {field: 'status__display', title: '状态', width: 100},
+            {field: 'creator', title: '创建人', width: 90},
+            {field: 'created_at', title: '创建时间', width: 160},
+            {fixed: 'right', title: '操作', toolbar: '#action-bar', width: 90}
+        ]],
+        parseData: function(res) {
+            return {code: res.code, msg: res.msg, count: res.count, data: res.data};
+        }
+    });
+
+    table.on('tool(main-table)', function(obj) {
+        if (obj.event === 'detail') {
+            window.location.href = '/db-deploy/mysql-replica/' + obj.data.id + '/';
+        }
+    });
+
+    $('#btn-search').on('click', function() {
+        tableIns.reload({where: {keyword: $('#search-keyword').val()}, page: {curr: 1}});
+    });
+    $('#btn-add').on('click', openCreateForm);
+});
+</script>
+{% endblock %}

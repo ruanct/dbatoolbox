@@ -66,21 +66,53 @@ class BaseDeployExecutor:
             return self._run_precheck(job)
         return self._run_ansible_step(job, step.step_code)
 
-    def _run_precheck(self, job: DbDeployJob) -> tuple[bool, str]:
+    def _ensure_python_interpreter(self, job: DbDeployJob) -> tuple[bool, str]:
+        """续跑时 precheck 已跳过，仍需在首次 Ansible 调用前解析解释器。"""
+        if self._python_interpreter:
+            return True, "已缓存"
+
+        saved = (job.result or {}).get("ansible_python_interpreter")
+        if saved:
+            self._python_interpreter = str(saved)
+            return True, "从任务记录恢复"
+
         from apps.common.ansible_inventory import ensure_python_interpreter
 
         ok, message, interpreter = ensure_python_interpreter(job.target_host_id)
         if not ok:
             return False, message
         self._python_interpreter = interpreter
+        return True, message
+
+    def _persist_python_interpreter(self, job: DbDeployJob) -> None:
+        if not self._python_interpreter:
+            return
+        result = dict(job.result or {})
+        if result.get("ansible_python_interpreter") == self._python_interpreter:
+            return
+        result["ansible_python_interpreter"] = self._python_interpreter
+        job.result = result
+        job.save(update_fields=["result", "updated_at"])
+
+    def _run_precheck(self, job: DbDeployJob) -> tuple[bool, str]:
+        ok, message = self._ensure_python_interpreter(job)
+        if not ok:
+            return False, message
+        interpreter = self._python_interpreter or ""
 
         success, ansible_output = self._run_ansible_step(job, "precheck")
         probe_line = f"[Python 预检] ansible_python_interpreter={interpreter} ({message})"
         if success:
+            self._persist_python_interpreter(job)
             return True, probe_line + ("\n" + ansible_output if ansible_output else "")
         return False, probe_line + ("\n" + ansible_output if ansible_output else "")
 
     def _run_ansible_step(self, job: DbDeployJob, step_code: str) -> tuple[bool, str]:
+        ok, message = self._ensure_python_interpreter(job)
+        if not ok:
+            return False, message
+        self._persist_python_interpreter(job)
+
         playbook = JOB_TYPE_PLAYBOOK_MAP.get(job.job_type)
         if not playbook:
             return False, f"未配置 Playbook: {job.job_type}"

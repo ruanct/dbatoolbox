@@ -23,13 +23,49 @@ DEPLOY_STEPS: list[tuple[str, str]] = [
     ("register_cmdb", "注册台账"),
 ]
 
+MYSQL_REPLICA_DEPLOY_STEPS: list[tuple[str, str]] = [
+    ("precheck", "预检查"),
+    ("prepare", "环境准备"),
+    ("install", "安装软件"),
+    ("configure", "配置文件"),
+    ("initialize", "初始化实例"),
+    ("start", "启动服务"),
+    ("repl_bootstrap", "全量同步"),
+    ("repl_setup", "建立复制"),
+    ("repl_readonly", "开启只读"),
+    ("repl_verify", "复制验收"),
+    ("verify", "连通验证"),
+    ("register_cmdb", "注册台账"),
+]
+
+MYSQL_REPLICA_MASTER_RUNTIME_KEYS: tuple[str, ...] = (
+    "lower_case_table_names",
+    "binlog_checksum",
+    "binlog_format",
+    "gtid_mode",
+    "enforce_gtid_consistency",
+    "log_slave_updates",
+    "character_set_server",
+    "collation_server",
+    "default_authentication_plugin",
+    "transaction_write_set_extraction",
+    "sql_mode",
+)
+
 JOB_TYPE_CHOICES: list[tuple[str, str]] = [
+    ("mysql_standalone", "MySQL 单实例"),
+    ("mysql_replica", "MySQL 从库"),
+    ("oracle_standalone", "Oracle 单实例"),
+]
+
+STANDALONE_DEPLOY_JOB_TYPES: list[tuple[str, str]] = [
     ("mysql_standalone", "MySQL 单实例"),
     ("oracle_standalone", "Oracle 单实例"),
 ]
 
 JOB_TYPE_ENGINE_MAP: dict[str, str] = {
     "mysql_standalone": "mysql",
+    "mysql_replica": "mysql",
     "oracle_standalone": "oracle",
 }
 
@@ -52,6 +88,7 @@ HOST_DEPLOY_ACTIVE_STATUSES: tuple[str, ...] = (
 
 JOB_TYPE_PLAYBOOK_MAP: dict[str, str] = {
     "mysql_standalone": "mysql/standalone/site.yml",
+    "mysql_replica": "mysql/replica/site.yml",
     "oracle_standalone": "oracle/standalone/site.yml",
 }
 
@@ -300,7 +337,7 @@ def ensure_mysql_server_id_available(
         )
 
     jobs = DbDeployJob.objects.filter(
-        job_type="mysql_standalone",
+        job_type__in=("mysql_standalone", "mysql_replica"),
         status__in=DEPLOY_JOB_ACTIVE_STATUSES,
     ).only("id", "resolved_params")
     if exclude_job_id is not None:
@@ -388,6 +425,43 @@ def finalize_mysql_deploy_params(merged: dict[str, Any]) -> None:
     build_mysql_cnf_sections(merged)
 
 
+def apply_mysql_master_runtime(merged: dict[str, Any]) -> None:
+    """将 precheck 采集的主库现场变量合并进从库 config 并重生成 my.cnf 段落。"""
+    context = merged.get("context") or {}
+    runtime = context.get("master_runtime") or {}
+    if not runtime:
+        return
+
+    config = merged.setdefault("config", {})
+    if runtime.get("character_set_server"):
+        config["character_set"] = runtime["character_set_server"]
+    if runtime.get("collation_server"):
+        config["collation"] = runtime["collation_server"]
+    if runtime.get("default_authentication_plugin"):
+        config["default_authentication_plugin"] = runtime["default_authentication_plugin"]
+    if runtime.get("sql_mode") is not None:
+        config["sql_mode"] = runtime["sql_mode"]
+    if runtime.get("binlog_format"):
+        config["binlog_format"] = runtime["binlog_format"]
+
+    gtid_mode = str(runtime.get("gtid_mode") or "").upper()
+    enforce_gtid = str(runtime.get("enforce_gtid_consistency") or "").upper()
+    log_bin = str(runtime.get("log_bin") or runtime.get("log_bin_enabled") or "").upper()
+    config["enable_binlog"] = log_bin in {"ON", "1", "TRUE", "YES"}
+    config["enable_gtid"] = (
+        gtid_mode == "ON"
+        and enforce_gtid == "ON"
+        and config["enable_binlog"]
+    )
+
+    for key in MYSQL_REPLICA_MASTER_RUNTIME_KEYS:
+        if key in runtime and runtime[key] is not None:
+            config[key] = runtime[key]
+    # server_id 必须保持从库独立生成值，禁止覆盖为主库 @@server_id
+
+    build_mysql_cnf_sections(merged)
+
+
 def _cnf_line_key(line: str) -> str:
     name = (line or "").split("=", 1)[0].strip()
     return name.lower().replace("_", "-")
@@ -399,6 +473,7 @@ def build_mysql_cnf_sections(merged: dict[str, Any]) -> None:
     install = merged.get("install") or {}
     profile_major = str((merged.get("profile") or {}).get("major_version") or "5.7")
     is_mysql80 = _parse_major_minor(profile_major) >= (8, 0)
+    is_replica = (merged.get("meta") or {}).get("job_type") == "mysql_replica"
 
     enable_binlog = _coerce_bool(config.get("enable_binlog"), default=True)
     enable_gtid = _coerce_bool(config.get("enable_gtid"), default=True) and enable_binlog
@@ -419,7 +494,7 @@ def build_mysql_cnf_sections(merged: dict[str, Any]) -> None:
         f"datadir={install.get('datadir', '')}",
         f"port={merged.get('cmdb', {}).get('port', 3306)}",
         f"socket={install.get('socket', '')}",
-        "bind-address=127.0.0.1",
+        f"bind-address={config.get('bind_address') or ('0.0.0.0' if is_replica else '127.0.0.1')}",
         f"character-set-server={character_set}",
         f"collation-server={collation}",
         f"max_connections={max_connections}",
@@ -435,6 +510,21 @@ def build_mysql_cnf_sections(merged: dict[str, Any]) -> None:
 
     if config.get("sql_mode"):
         mysqld_lines.append(f"sql_mode={config['sql_mode']}")
+
+    if is_replica:
+        replica_lines: list[tuple[str, Any]] = [
+            ("lower_case_table_names", config.get("lower_case_table_names", 1)),
+            ("binlog_checksum", config.get("binlog_checksum", "CRC32")),
+            ("slave_sql_verify_checksum", config.get("slave_sql_verify_checksum", "ON")),
+        ]
+        if is_mysql80:
+            replica_lines.append(
+                ("transaction_write_set_extraction", config.get("transaction_write_set_extraction", "XXHASH64")),
+            )
+        for param_name, param_value in replica_lines:
+            if param_value is None or param_value == "":
+                continue
+            mysqld_lines.append(f"{param_name}={param_value}")
 
     written_keys = {_cnf_line_key(line) for line in mysqld_lines}
 
