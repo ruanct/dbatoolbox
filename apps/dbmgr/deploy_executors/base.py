@@ -6,7 +6,7 @@ from typing import Any
 from django.utils import timezone
 
 from apps.dbmgr.deploy_ansible import run_deploy_playbook_step
-from apps.dbmgr.deploy_constants import JOB_TYPE_PLAYBOOK_MAP
+from apps.dbmgr.deploy_constants import JOB_TYPE_PLAYBOOK_MAP, resolve_deploy_step_timeout
 from apps.dbmgr.deploy_services import (
     mark_job_finished,
     mark_job_running,
@@ -124,6 +124,7 @@ class BaseDeployExecutor:
             step_tag=step_code,
             deploy_vars=deploy_vars,
             python_interpreter=self._python_interpreter,
+            timeout=resolve_deploy_step_timeout(step_code),
         )
 
     def _register_cmdb(self, job: DbDeployJob) -> tuple[bool, str]:

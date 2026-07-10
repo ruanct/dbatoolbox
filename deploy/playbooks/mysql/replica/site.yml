@@ -22,7 +22,6 @@
     mysql_same_host: "{{ d.context.same_host_as_master | default(false) | bool }}"
     mysql_dump_user: "{{ d.credentials.dump_account.account_name }}"
     mysql_dump_pswd: "{{ d.credentials.dump_account.account_pswd }}"
-    mysql_dump_pswd_sql: "{{ d.credentials.dump_account.account_pswd | replace(\"'\", \"''\") }}"
     mysql_repl_user: "{{ d.credentials.repl_account.account_name }}"
     mysql_repl_pswd: "{{ d.credentials.repl_account.account_pswd }}"
     mysql_root_user: "{{ (d.credentials.root_account | default({})).account_name | default('root') }}"
@@ -36,6 +35,8 @@
     mysql_dump_sql_path: "/tmp/mysql_replica_{{ mysql_job_id }}.sql"
     mysql_local_grant_sql_path: "/tmp/dbatoolbox_replica_local_grant_{{ mysql_job_id }}.sql"
     mysql_force_rebuild: "{{ d.context.force_rebuild | default(false) | bool }}"
+    mysql_import_max_allowed_packet: "{{ d.config.max_allowed_packet | default('1024M') }}"
+    mysql_import_max_allowed_packet_bytes: 1073741824
 
   tasks:
     - name: "[precheck] 检查 MySQL 客户端是否可用（从库主机）"
@@ -236,31 +237,27 @@
         executable: /bin/bash
       register: replica_mysqldump
 
-    - name: "[repl_bootstrap] 生成本地 DBA 授权 SQL"
+    - name: "[repl_bootstrap] 生成导入后权限刷新 SQL"
       tags: [repl_bootstrap]
       copy:
         dest: "{{ mysql_local_grant_sql_path }}"
         mode: "0600"
         content: |
           FLUSH PRIVILEGES;
-          CREATE USER IF NOT EXISTS '{{ mysql_dump_user }}'@'localhost' IDENTIFIED BY '{{ mysql_dump_pswd_sql }}';
-          CREATE USER IF NOT EXISTS '{{ mysql_dump_user }}'@'127.0.0.1' IDENTIFIED BY '{{ mysql_dump_pswd_sql }}';
-          {% for grant_sql in d.credentials.dba_grant_statements | default([]) %}
-          {{ grant_sql | replace('__DBA_USER__', mysql_dump_user) | replace('__DBA_HOST__', 'localhost') }}
-          {% endfor %}
-          {% for grant_sql in d.credentials.dba_grant_statements | default([]) %}
-          {{ grant_sql | replace('__DBA_USER__', mysql_dump_user) | replace('__DBA_HOST__', '127.0.0.1') }}
-          {% endfor %}
-          FLUSH PRIVILEGES;
 
     - name: "[repl_bootstrap] 导入全量数据到从库"
       tags: [repl_bootstrap]
       shell: |
         set -o pipefail
+        MYSQL="{{ mysql_basedir }}/bin/mysql"
+        SOCK="{{ mysql_socket }}"
+        MAXPKT="{{ mysql_import_max_allowed_packet }}"
+        # 导入前放大服务端包上限（默认 4M 不足以承载 mysqldump 大行；与 MYSQL_DEFAULT_MAX_ALLOWED_PACKET 一致）
+        "$MYSQL" -S "$SOCK" -uroot -e "SET GLOBAL max_allowed_packet={{ mysql_import_max_allowed_packet_bytes }};"
         {
           cat {{ mysql_dump_sql_path | quote }}
           cat {{ mysql_local_grant_sql_path | quote }}
-        } | {{ mysql_basedir }}/bin/mysql -S {{ mysql_socket | quote }} -uroot
+        } | "$MYSQL" --max_allowed_packet="$MAXPKT" -S "$SOCK" -uroot
       args:
         executable: /bin/bash
 

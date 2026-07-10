@@ -38,6 +38,20 @@ MYSQL_REPLICA_DEPLOY_STEPS: list[tuple[str, str]] = [
     ("register_cmdb", "注册台账"),
 ]
 
+# Ansible 单步 subprocess 超时（秒）
+DEPLOY_ANSIBLE_STEP_TIMEOUT_DEFAULT = 3600
+DEPLOY_ANSIBLE_STEP_TIMEOUT_REPL_BOOTSTRAP = 7200
+
+DEPLOY_ANSIBLE_STEP_TIMEOUTS: dict[str, int] = {
+    "repl_bootstrap": DEPLOY_ANSIBLE_STEP_TIMEOUT_REPL_BOOTSTRAP,
+}
+
+
+def resolve_deploy_step_timeout(step_code: str) -> int:
+    """按 step_code 返回 Ansible 步骤超时；未配置则用默认 1 小时。"""
+    return DEPLOY_ANSIBLE_STEP_TIMEOUTS.get(step_code, DEPLOY_ANSIBLE_STEP_TIMEOUT_DEFAULT)
+
+
 MYSQL_REPLICA_MASTER_RUNTIME_KEYS: tuple[str, ...] = (
     "lower_case_table_names",
     "binlog_checksum",
@@ -97,6 +111,9 @@ MYSQL_SERVER_ID_MAX = 4294967295
 MYSQL_ROOT_GRANT_HOST = "localhost"
 MYSQL_DBA_ACCOUNT_TYPE = "user_dba"
 MYSQL_DBA_ACCOUNT_NAME = "dba_admin"
+# 全量导入 mysqldump 单行可能很大，须大于默认 4M
+MYSQL_DEFAULT_MAX_ALLOWED_PACKET = "1024M"
+MYSQL_IMPORT_MAX_ALLOWED_PACKET_BYTES = 1073741824
 
 MYSQL_PARAM_TEMPLATE_MAJOR_CHOICES: list[tuple[str, str]] = [
     ("5.7", "MySQL 5.7"),
@@ -488,6 +505,7 @@ def build_mysql_cnf_sections(merged: dict[str, Any]) -> None:
         "caching_sha2_password" if is_mysql80 else "mysql_native_password"
     )
     client_charset = config.get("client_character_set") or character_set
+    max_allowed_packet = config.get("max_allowed_packet") or MYSQL_DEFAULT_MAX_ALLOWED_PACKET
 
     mysqld_lines: list[str] = [
         f"basedir={install.get('basedir', MYSQL_BINARY_BASEDIR)}",
@@ -498,6 +516,7 @@ def build_mysql_cnf_sections(merged: dict[str, Any]) -> None:
         f"character-set-server={character_set}",
         f"collation-server={collation}",
         f"max_connections={max_connections}",
+        f"max_allowed_packet={max_allowed_packet}",
         f"innodb_buffer_pool_size={innodb_buffer_pool_size}",
         f"default_authentication_plugin={auth_plugin}",
         f"log-error={install.get('log_error', '')}",
@@ -564,6 +583,7 @@ def build_mysql_cnf_sections(merged: dict[str, Any]) -> None:
     client_lines: list[str] = [
         f"socket={install.get('socket', '')}",
         f"default-character-set={client_charset}",
+        f"max_allowed_packet={max_allowed_packet}",
     ]
     client_written = {_cnf_line_key(line) for line in client_lines}
     client_template_items = (config.get("cnf_template_items") or {}).get("client") or []

@@ -500,7 +500,7 @@ repl_bootstrap:
     --master-data=2 \
     --all-databases \
     -r /tmp/mysql_replica_<job_id>.sql
-  # 同一 mysql 会话末尾追加本地 DBA 授权 SQL（补 dba_admin@localhost 等，可选）
+  # 同一 mysql 会话末尾追加 FLUSH PRIVILEGES（mysqldump 直写 mysql.user 后刷新内存权限缓存）
   cat /tmp/mysql_replica_<job_id>.sql /tmp/dbatoolbox_replica_local_grant_<job_id>.sql \
     | mysql -S /data/mysql/db{slave_port}/mysql.sock -uroot
   校验 dba_admin socket 连通（bootstrap 内自检）
@@ -509,7 +509,7 @@ repl_bootstrap:
 
 **要点：**
 
-- **不在此前/此后执行 `post_config`**；导入后从库账号表与主库一致（含 `root@localhost` 密码）
+- `mysqldump --all-databases` 导入后从库用户表与主库一致；导入同一会话末尾仅执行 `FLUSH PRIVILEGES` 刷新权限缓存
 - `repl_setup` **不**使用 `dba_admin` 连从库，而使用 §2.2 的 `root_account`（主库台账密码 + 从库 socket）
 - `--set-gtid-purged=ON` 要求主库 GTID ON（§2.4）
 - 密码通过 `defaults-extra-file` 传递，避免命令行泄露
