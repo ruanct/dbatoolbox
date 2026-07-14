@@ -189,6 +189,7 @@ function renderJob(data) {
         ['复制连接', (ctx.master_host || '-') + ':' + (ctx.master_port || '-')],
         ['CMDB 主库入口', ctx.master_connect_host || '-'],
         ['全量方式', bootstrapMethodLabel(data.bootstrap_method || ctx.bootstrap_method)],
+        ['半同步', (ctx.enable_semi_sync || data.enable_semi_sync) ? '开启' : '关闭'],
         ['版本档案', data.version_profile_code],
         ['从库主机', data.target_host__display],
         ['从库实例名', cmdb.instance_name || '-'],

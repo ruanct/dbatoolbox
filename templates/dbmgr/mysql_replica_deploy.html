@@ -258,6 +258,17 @@ function buildCreateFormHtml() {
     return '<div class="deploy-form-wrap">'
         + '<table class="layui-table deploy-form-table" lay-size="sm"><tbody>'
         + formRow2('复制集', buildClusterSelect(''), '全量方式', buildBootstrapSelect('mysqldump'))
+        + '</tbody></table>'
+        + '<form class="layui-form" lay-filter="replica-semi-sync-panel">'
+        + '<table class="layui-table deploy-form-table" lay-size="sm"><tbody>'
+        + formRow2(
+            '半同步',
+            '<input type="checkbox" id="f-enable-semi-sync" lay-skin="switch" lay-text="开启|关闭" lay-filter="f-enable-semi-sync">',
+            '',
+            ''
+        )
+        + '</tbody></table></form>'
+        + '<table class="layui-table deploy-form-table" lay-size="sm"><tbody>'
         + '<tr><td class="deploy-label">主库信息</td><td class="deploy-field" colspan="3">'
         + '<div id="master-info-panel" class="master-info-box">' + masterInfoHtml(null) + '</div>'
         + '</td></tr>'
@@ -318,6 +329,9 @@ function openCreateForm() {
         success: function() {
             bindCreateFormEvents();
             syncMasterPanel();
+            if (layui.form) {
+                layui.form.render('checkbox', 'replica-semi-sync-panel');
+            }
         },
         yes: function() {
             var clusterId = parseInt($('#f-cluster').val(), 10);
@@ -342,6 +356,7 @@ function openCreateForm() {
                 return false;
             }
             var tplTitle = ($('#f-param-template').val() || '').trim();
+            var enableSemiSync = $('#f-enable-semi-sync').prop('checked');
             var body = {
                 job_type: 'mysql_replica',
                 version_profile_code: profileCode,
@@ -353,7 +368,8 @@ function openCreateForm() {
                     context: {
                         replication_cluster_id: clusterId,
                         master_instance_id: cluster.primary_instance_id,
-                        bootstrap_method: $('#f-bootstrap').val() || 'mysqldump'
+                        bootstrap_method: $('#f-bootstrap').val() || 'mysqldump',
+                        enable_semi_sync: enableSemiSync
                     },
                     cmdb: {
                         instance_name: $('#f-instance-name').val(),
@@ -397,7 +413,7 @@ function openCreateForm() {
 }
 
 var tableIns;
-layui.use(['table', 'layer'], function() {
+layui.use(['table', 'layer', 'form'], function() {
     var table = layui.table;
     tableIns = table.render({
         elem: '#main-table',
@@ -410,6 +426,9 @@ layui.use(['table', 'layer'], function() {
             {field: 'target_host__display', title: '从库主机', minWidth: 140},
             {field: 'instance__display', title: '从库实例', minWidth: 140},
             {field: 'bootstrap_method', title: '全量方式', width: 110},
+            {field: 'enable_semi_sync', title: '半同步', width: 80, templet: function(d) {
+                return d.enable_semi_sync ? '是' : '否';
+            }},
             {field: 'status__display', title: '状态', width: 100},
             {field: 'creator', title: '创建人', width: 90},
             {field: 'created_at', title: '创建时间', width: 160},

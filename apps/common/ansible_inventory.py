@@ -49,50 +49,87 @@ exit 1
 """.strip()
 
 
+def _format_inventory_host_line(
+    host: Host,
+    ip_addr: str,
+    acct: HostAccount | None,
+    interpreter: str | None,
+) -> str:
+    user = acct.account_name if acct else "root"
+    pswd = acct.account_pswd if acct else ""
+    port = host.ssh_port or 22
+    line = (
+        f'{host.hostname} ansible_host={ip_addr} ansible_user={user} '
+        f'ansible_ssh_pass="{pswd}" ansible_port={port} '
+        f'ansible_ssh_common_args="-o StrictHostKeyChecking=no'
+        f' -o UserKnownHostsFile=/dev/null'
+        f' -o HostKeyAlgorithms=+ssh-rsa,ssh-dss'
+        f' -o ServerAliveInterval=30'
+        f' -o ConnectTimeout=15"'
+    )
+    if interpreter:
+        line += f" ansible_python_interpreter={interpreter}"
+    return line
+
+
 def build_inventory(
     host_ids: list[int],
     *,
     python_interpreter_by_host_id: dict[int, str] | None = None,
+    host_groups: dict[str, list[int]] | None = None,
 ) -> tuple[str, dict[str, int]]:
-    """构建 ansible inventory；可为每台主机指定 ansible_python_interpreter。"""
-    lines = ["[targets]"]
-    hosts: dict[str, int] = {}
-    interpreter_map = python_interpreter_by_host_id or {}
+    """构建 ansible inventory；可为每台主机指定 ansible_python_interpreter。
 
-    ip_qs = HostIP.objects.filter(host_id__in=host_ids).order_by("host_id", "id")
+    host_groups 非空时按组输出（如 targets / master）；否则写入 [targets]。
+    """
+    interpreter_map = python_interpreter_by_host_id or {}
+    if host_groups:
+        all_host_ids = sorted({hid for ids in host_groups.values() for hid in ids})
+    else:
+        all_host_ids = list(host_ids)
+
+    ip_qs = HostIP.objects.filter(host_id__in=all_host_ids).order_by("host_id", "id")
     ip_map: dict[int, str] = {}
     for ip in ip_qs:
         if ip.host_id not in ip_map:
             ip_map[ip.host_id] = ip.ip_address
 
-    account_qs = HostAccount.objects.filter(host_id__in=host_ids, account_type="adm")
+    account_qs = HostAccount.objects.filter(host_id__in=all_host_ids, account_type="adm")
     account_map: dict[int, HostAccount] = {}
     for acct in account_qs:
         if acct.host_id not in account_map:
             account_map[acct.host_id] = acct
 
-    for host in Host.objects.filter(id__in=host_ids):
+    host_line_by_id: dict[int, str] = {}
+    hosts: dict[str, int] = {}
+    for host in Host.objects.filter(id__in=all_host_ids):
         ip_addr = ip_map.get(host.id, "")
-        acct = account_map.get(host.id)
         if not ip_addr:
             continue
-        user = acct.account_name if acct else "root"
-        pswd = acct.account_pswd if acct else ""
-        port = host.ssh_port or 22
-        line = (
-            f'{host.hostname} ansible_host={ip_addr} ansible_user={user} '
-            f'ansible_ssh_pass="{pswd}" ansible_port={port} '
-            f'ansible_ssh_common_args="-o StrictHostKeyChecking=no'
-            f' -o UserKnownHostsFile=/dev/null'
-            f' -o HostKeyAlgorithms=+ssh-rsa,ssh-dss'
-            f' -o ServerAliveInterval=30'
-            f' -o ConnectTimeout=15"'
+        line = _format_inventory_host_line(
+            host,
+            ip_addr,
+            account_map.get(host.id),
+            interpreter_map.get(host.id),
         )
-        interpreter = interpreter_map.get(host.id)
-        if interpreter:
-            line += f' ansible_python_interpreter={interpreter}'
-        lines.append(line)
+        host_line_by_id[host.id] = line
         hosts[host.hostname] = host.id
+
+    if host_groups:
+        lines: list[str] = []
+        for group_name, group_host_ids in host_groups.items():
+            lines.append(f"[{group_name}]")
+            for hid in group_host_ids:
+                line = host_line_by_id.get(hid)
+                if line:
+                    lines.append(line)
+        return "\n".join(lines), hosts
+
+    lines = ["[targets]"]
+    for hid in host_ids:
+        line = host_line_by_id.get(hid)
+        if line:
+            lines.append(line)
     return "\n".join(lines), hosts
 
 

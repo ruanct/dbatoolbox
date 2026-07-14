@@ -23,6 +23,8 @@ DEPLOY_STEPS: list[tuple[str, str]] = [
     ("register_cmdb", "注册台账"),
 ]
 
+MYSQL_REPLICA_SEMI_SYNC_MASTER_TIMEOUT = 1500
+
 MYSQL_REPLICA_DEPLOY_STEPS: list[tuple[str, str]] = [
     ("precheck", "预检查"),
     ("prepare", "环境准备"),
@@ -31,6 +33,7 @@ MYSQL_REPLICA_DEPLOY_STEPS: list[tuple[str, str]] = [
     ("initialize", "初始化实例"),
     ("start", "启动服务"),
     ("repl_bootstrap", "全量同步"),
+    ("repl_semi_sync", "配置半同步"),
     ("repl_setup", "建立复制"),
     ("repl_readonly", "开启只读"),
     ("repl_verify", "复制验收"),

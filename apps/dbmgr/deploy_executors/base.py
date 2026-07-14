@@ -107,7 +107,14 @@ class BaseDeployExecutor:
             return True, probe_line + ("\n" + ansible_output if ansible_output else "")
         return False, probe_line + ("\n" + ansible_output if ansible_output else "")
 
-    def _run_ansible_step(self, job: DbDeployJob, step_code: str) -> tuple[bool, str]:
+    def _run_ansible_step(
+        self,
+        job: DbDeployJob,
+        step_code: str,
+        *,
+        inventory_groups: dict[str, list[int]] | None = None,
+        python_interpreter_by_host_id: dict[int, str] | None = None,
+    ) -> tuple[bool, str]:
         ok, message = self._ensure_python_interpreter(job)
         if not ok:
             return False, message
@@ -118,12 +125,17 @@ class BaseDeployExecutor:
             return False, f"未配置 Playbook: {job.job_type}"
         deploy_vars = dict(job.resolved_params or {})
         deploy_vars["credentials"] = job.resolved_params.get("credentials") or {}
+        interpreter_map = dict(python_interpreter_by_host_id or {})
+        if self._python_interpreter and job.target_host_id not in interpreter_map:
+            interpreter_map[job.target_host_id] = self._python_interpreter
         return run_deploy_playbook_step(
             host_id=job.target_host_id,
             playbook_relative=playbook,
             step_tag=step_code,
             deploy_vars=deploy_vars,
             python_interpreter=self._python_interpreter,
+            inventory_groups=inventory_groups,
+            python_interpreter_by_host_id=interpreter_map or None,
             timeout=resolve_deploy_step_timeout(step_code),
         )
 

@@ -83,13 +83,27 @@ def run_deploy_playbook_step(
     deploy_vars: dict[str, Any],
     timeout: int = 3600,
     python_interpreter: str | None = None,
+    inventory_groups: dict[str, list[int]] | None = None,
+    python_interpreter_by_host_id: dict[int, str] | None = None,
 ) -> tuple[bool, str]:
     playbook_path = _playbooks_root() / playbook_relative
     if not playbook_path.exists():
         return False, f"Playbook 不存在: {playbook_path}"
 
-    interpreter_map = {host_id: python_interpreter} if python_interpreter else None
-    inv_content, hostname_map = _build_inventory([host_id], python_interpreter_by_host_id=interpreter_map)
+    interpreter_map = dict(python_interpreter_by_host_id or {})
+    if python_interpreter and host_id not in interpreter_map:
+        interpreter_map[host_id] = python_interpreter
+    if inventory_groups:
+        inv_content, hostname_map = _build_inventory(
+            [],
+            python_interpreter_by_host_id=interpreter_map or None,
+            host_groups=inventory_groups,
+        )
+    else:
+        inv_content, hostname_map = _build_inventory(
+            [host_id],
+            python_interpreter_by_host_id=interpreter_map or None,
+        )
     if not hostname_map:
         return False, "无法构建目标主机 Ansible Inventory（检查主机 IP 与账号）"
 
@@ -115,7 +129,7 @@ def run_deploy_playbook_step(
             "--tags", step_tag,
             "-e", f"@{vars_path}",
         ]
-        if python_interpreter:
+        if python_interpreter and not inventory_groups:
             cmd.extend(["-e", f"ansible_python_interpreter={python_interpreter}"])
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
         stdout = proc.stdout.strip()

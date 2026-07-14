@@ -18,6 +18,7 @@ from .deploy_constants import (
     MYSQL_ROOT_ACCOUNT_TYPE,
     MYSQL_ROOT_GRANT_HOST,
     STANDALONE_DEPLOY_JOB_TYPES,
+    _coerce_bool,
     apply_mysql_master_runtime,
     build_mysql_cnf_sections,
     build_mysql_server_id,
@@ -112,6 +113,7 @@ def serialize_deploy_job(obj: DbDeployJob, *, include_steps: bool = False) -> di
         data["master_instance_id"] = ctx.get("master_instance_id")
         data["master_instance__display"] = cmdb.get("master_instance_name") or ""
         data["bootstrap_method"] = ctx.get("bootstrap_method") or ""
+        data["enable_semi_sync"] = bool(ctx.get("enable_semi_sync"))
     return data
 
 
@@ -1068,6 +1070,8 @@ def _validate_mysql_replica_create_body(body: dict[str, Any]) -> dict[str, Any]:
     if bootstrap_method != "mysqldump":
         raise ServiceError("第一期仅支持 mysqldump 全量同步")
 
+    enable_semi_sync = _coerce_bool(context.get("enable_semi_sync"), default=False)
+
     if not (master.version or "").strip():
         raise ServiceError("主库版本号为空，请先在 CMDB 维护主库版本")
 
@@ -1175,6 +1179,7 @@ def _validate_mysql_replica_create_body(body: dict[str, Any]) -> dict[str, Any]:
         "master_instance_id": master.id,
         "bootstrap_method": bootstrap_method,
         "force_rebuild": bool(context.get("force_rebuild")),
+        "enable_semi_sync": enable_semi_sync,
     })
     context.update(master_endpoint)
     user_params["context"] = context
@@ -1257,6 +1262,404 @@ def ensure_mysql_replica_root_credentials(job: DbDeployJob) -> None:
         raise ServiceError("从库任务缺少 master_instance_id，无法解析主库 root 密码")
     master = DatabaseInstance.objects.get(id=int(master_id))
     _apply_mysql_replica_root_credentials(resolved, master)
+    job.resolved_params = resolved
+    job.save(update_fields=["resolved_params", "updated_at"])
+
+
+_MASTER_INSTALL_KEYS = ("basedir", "datadir", "socket", "cnf_path")
+_MASTER_INSTALL_DISCOVERED_SOURCES = frozenset({"sql", "process", "sql+process", "derived"})
+
+
+def _master_install_is_complete(install: dict[str, Any] | None) -> bool:
+    """仅当四条路径齐全且来自探测（非历史 build_mysql_install_paths 推导）时视为可复用。"""
+    if not isinstance(install, dict):
+        return False
+    source = str(install.get("source") or "").strip()
+    if source not in _MASTER_INSTALL_DISCOVERED_SOURCES:
+        return False
+    return all(str(install.get(key) or "").strip() for key in _MASTER_INSTALL_KEYS)
+
+
+def _normalize_master_install(data: dict[str, Any] | None) -> dict[str, str]:
+    result: dict[str, str] = {}
+    if not isinstance(data, dict):
+        return result
+    for key in _MASTER_INSTALL_KEYS:
+        value = str(data.get(key) or "").strip()
+        if value:
+            result[key] = value
+    return result
+
+
+def _merge_master_install(
+    base: dict[str, Any] | None,
+    *sources: dict[str, Any] | None,
+) -> dict[str, str]:
+    merged = _normalize_master_install(base)
+    for source in sources:
+        for key, value in _normalize_master_install(source).items():
+            if key not in merged:
+                merged[key] = value
+    return merged
+
+
+def _discover_mysql_master_install_via_sql(
+    *,
+    host: str,
+    port: int,
+    user: str,
+    password: str,
+) -> dict[str, str]:
+    """通过 DBA TCP 查询主库运行变量，获取 basedir / datadir / socket。"""
+    import mysql.connector
+
+    names = ("basedir", "datadir", "socket")
+    placeholders = ", ".join(f"'{n}'" for n in names)
+    conn = mysql.connector.connect(
+        host=host,
+        port=int(port),
+        user=user,
+        password=password,
+        connection_timeout=10,
+    )
+    try:
+        cursor = conn.cursor()
+        cursor.execute(f"SHOW VARIABLES WHERE Variable_name IN ({placeholders})")
+        rows = {str(name).lower(): str(value) for name, value in cursor.fetchall()}
+    finally:
+        conn.close()
+    return _normalize_master_install(rows)
+
+
+def _derive_cnf_path_from_socket(socket_path: str) -> str:
+    """从 socket 反推 my.cnf（仅兜底，优先用进程 --defaults-file）。
+
+    …/mysql.sock -> …/my.cnf
+    """
+    socket_path = (socket_path or "").strip()
+    if not socket_path or "/" not in socket_path:
+        return ""
+    parent = socket_path.rsplit("/", 1)[0]
+    return f"{parent}/my.cnf" if parent else ""
+
+
+def _build_mysql_master_process_probe_script(port: int) -> str:
+    """在主库部署机上按监听端口解析 mysqld 进程路径。
+
+    主路径：cmdline --defaults-file + 读取 cnf；
+    兜底：{{datadir父}}/mysql.sock、{{datadir父}}/my.cnf；socket 为 …/mysql.sock 时反推 …/my.cnf。
+    """
+    port_num = int(port)
+    # 注意：整段脚本经 ansible -m raw -a 下发，避免嵌套引号过多；结果仅输出一行标记。
+    return f"""
+set -u
+PORT={port_num}
+run_priv() {{
+  if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+    sudo -n "$@"
+  else
+    "$@"
+  fi
+}}
+PID=""
+if command -v ss >/dev/null 2>&1; then
+  # 例: LISTEN ... *:3306 ... users:(("mysqld",pid=6718,fd=23))
+  PID=$(run_priv ss -lntp 2>/dev/null | grep "${{PORT}}" | grep -i mysqld | head -1 | sed -n 's/.*pid=\\([0-9][0-9]*\\).*/\\1/p' || true)
+  if [ -z "$PID" ]; then
+    PID=$(run_priv ss -lntp 2>/dev/null | grep -E ":${{PORT}}([[:space:]]|$)" | head -1 | sed -n 's/.*pid=\\([0-9][0-9]*\\).*/\\1/p' || true)
+  fi
+fi
+if [ -z "$PID" ] && command -v lsof >/dev/null 2>&1; then
+  PID=$(run_priv lsof -nP -iTCP:${{PORT}} -sTCP:LISTEN 2>/dev/null | awk 'NR>1 {{print $2; exit}}' || true)
+fi
+if [ -z "$PID" ]; then
+  for p in $(pgrep -x mysqld 2>/dev/null; pgrep -f '[m]ysqld' 2>/dev/null); do
+    CMD=$(tr '\\0' ' ' < /proc/$p/cmdline 2>/dev/null || true)
+    case "$CMD" in
+      *"--port=${{PORT}}"*|*"--port ${{PORT}}"*) PID=$p; break ;;
+    esac
+  done
+fi
+if [ -z "$PID" ] || [ ! -r "/proc/${{PID}}/cmdline" ]; then
+  echo "ERROR|未找到监听端口 ${{PORT}} 的 mysqld 进程" >&2
+  exit 1
+fi
+CMD=$(tr '\\0' ' ' < /proc/${{PID}}/cmdline)
+# --defaults-file=/data/mysql/dbPORT/etc/my.cnf （现场主路径）
+CNF=$(printf '%s\\n' "$CMD" | sed -n 's/.*--[[:space:]]*defaults-file[= ]\\([^[:space:]]*\\).*/\\1/p' | head -1)
+[ -z "$CNF" ] && CNF=$(printf '%s\\n' "$CMD" | sed -n 's/.*--[[:space:]]*defaults_file[= ]\\([^[:space:]]*\\).*/\\1/p' | head -1)
+DATADIR=$(printf '%s\\n' "$CMD" | sed -n 's/.*--[[:space:]]*datadir[= ]\\([^[:space:]]*\\).*/\\1/p' | head -1)
+SOCKET=$(printf '%s\\n' "$CMD" | sed -n 's/.*--[[:space:]]*socket[= ]\\([^[:space:]]*\\).*/\\1/p' | head -1)
+BASEDIR=$(printf '%s\\n' "$CMD" | sed -n 's/.*--[[:space:]]*basedir[= ]\\([^[:space:]]*\\).*/\\1/p' | head -1)
+read_cnf_key() {{
+  # 优先 [mysqld]，再 grep 首条 key=（兼容 socket 写在 [client]）
+  local key="$1" file="$2" val=""
+  [ -n "$file" ] && [ -r "$file" ] || return 0
+  val=$(awk -F= -v k="$key" '
+    BEGIN {{ IGNORECASE=1 }}
+    /^[[:space:]]*#/ {{ next }}
+    /^[[:space:]]*\\[/ {{
+      sect=$0; gsub(/[[:space:]]/, "", sect); sect=tolower(sect)
+    }}
+    sect == "[mysqld]" {{
+      keyname=$1; gsub(/^[[:space:]]+|[[:space:]]+$/, "", keyname)
+      if (tolower(keyname) == tolower(k)) {{
+        v=$2; gsub(/^[[:space:]]+|[[:space:]]+$/, "", v); print v; exit
+      }}
+    }}
+  ' "$file" || true)
+  if [ -z "$val" ]; then
+    val=$(grep -iE "^[[:space:]]*${{key}}[[:space:]]*=" "$file" 2>/dev/null | head -1 | cut -d= -f2- | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || true)
+  fi
+  printf '%s' "$val"
+}}
+if [ -n "$CNF" ] && [ -r "$CNF" ]; then
+  [ -z "$DATADIR" ] && DATADIR=$(read_cnf_key datadir "$CNF")
+  [ -z "$SOCKET" ] && SOCKET=$(read_cnf_key socket "$CNF")
+  [ -z "$BASEDIR" ] && BASEDIR=$(read_cnf_key basedir "$CNF")
+fi
+if [ -z "$BASEDIR" ]; then
+  EXE=$(readlink -f "/proc/${{PID}}/exe" 2>/dev/null || true)
+  if [ -z "$EXE" ]; then
+    EXE=$(printf '%s\\n' "$CMD" | awk '{{print $1; exit}}')
+  fi
+  if [ -n "$EXE" ]; then
+    case "$EXE" in
+      */bin/mysqld|*/sbin/mysqld) BASEDIR=$(dirname "$(dirname "$EXE")") ;;
+    esac
+  fi
+fi
+if [ -z "$SOCKET" ] && [ -n "$DATADIR" ]; then
+  ROOT=$(dirname "$DATADIR")
+  if [ -S "${{ROOT}}/mysql.sock" ]; then SOCKET="${{ROOT}}/mysql.sock"; fi
+fi
+if [ -z "$CNF" ] && [ -n "$DATADIR" ]; then
+  ROOT=$(dirname "$DATADIR")
+  if [ -f "${{ROOT}}/my.cnf" ]; then CNF="${{ROOT}}/my.cnf"; fi
+fi
+if [ -z "$CNF" ] && [ -n "$SOCKET" ]; then
+  case "$SOCKET" in
+    */mysql.sock)
+      PARENT=$(dirname "$SOCKET")
+      [ -f "${{PARENT}}/my.cnf" ] && CNF="${{PARENT}}/my.cnf"
+      ;;
+  esac
+fi
+if [ -z "$BASEDIR" ] || [ -z "$DATADIR" ] || [ -z "$SOCKET" ] || [ -z "$CNF" ]; then
+  echo "ERROR|进程探测不完整 basedir=${{BASEDIR:-}} datadir=${{DATADIR:-}} socket=${{SOCKET:-}} cnf=${{CNF:-}} cmd=${{CMD}}" >&2
+  exit 1
+fi
+# 单行标记；Python 侧用 raw_decode 容忍 Ansible 粘连尾部
+printf 'MASTER_INSTALL_JSON={{"basedir":"%s","datadir":"%s","socket":"%s","cnf_path":"%s"}}\\n' \
+  "$BASEDIR" "$DATADIR" "$SOCKET" "$CNF"
+""".strip()
+
+
+def _parse_master_install_json_payload(payload: str) -> dict[str, Any]:
+    """解析 MASTER_INSTALL_JSON 后的载荷；容忍 Ansible 粘连的尾部垃圾。"""
+    text = (payload or "").strip()
+    if not text:
+        raise json.JSONDecodeError("empty", text, 0)
+    # 优先取第一个 JSON 对象，忽略 Extra data
+    decoder = json.JSONDecoder()
+    try:
+        data, _end = decoder.raw_decode(text)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", text)
+        if not match:
+            raise
+        data, _end = decoder.raw_decode(match.group(0))
+    if not isinstance(data, dict):
+        raise json.JSONDecodeError("not an object", text, 0)
+    return data
+
+
+def _discover_mysql_master_install_via_process(
+    *,
+    host_id: int,
+    port: int,
+) -> dict[str, str]:
+    """SSH 主库部署机，按 mysqld 进程识别 basedir / datadir / socket / cnf_path。"""
+    from apps.common.ansible_inventory import _run_ansible_raw
+    from apps.common.models import Host
+
+    try:
+        host = Host.objects.get(id=host_id)
+    except Host.DoesNotExist as exc:
+        raise ServiceError(f"主库部署主机不存在: {host_id}") from exc
+
+    outputs = _run_ansible_raw(
+        [host_id],
+        _build_mysql_master_process_probe_script(port),
+        timeout=60,
+    )
+    stdout = outputs.get(host.hostname, "")
+    if not stdout:
+        err = outputs.get("__stderr__") or outputs.get("__error__") or outputs.get("__raw__") or "无输出"
+        raise ServiceError(f"[{host.hostname}] 主库进程路径探测失败: {err}")
+
+    marker = "MASTER_INSTALL_JSON="
+    payload = ""
+    for line in stdout.replace("\\n", "\n").splitlines():
+        text = line.strip()
+        if "ERROR|" in text and marker not in text:
+            raise ServiceError(f"[{host.hostname}] {text.split('ERROR|', 1)[-1]}")
+        if marker in text:
+            payload = text.split(marker, 1)[1].strip()
+            break
+    if not payload and marker in stdout:
+        payload = stdout.split(marker, 1)[1].strip()
+    if not payload:
+        raise ServiceError(
+            f"[{host.hostname}] 主库进程路径探测未返回 MASTER_INSTALL_JSON: {stdout[:500]}"
+        )
+
+    try:
+        data = _parse_master_install_json_payload(payload)
+    except json.JSONDecodeError as exc:
+        raise ServiceError(
+            f"[{host.hostname}] 解析主库进程路径失败: {exc}; payload={payload[:300]}"
+        ) from exc
+    return _normalize_master_install(data)
+
+
+def ensure_mysql_replica_master_install(job: DbDeployJob) -> None:
+    """半同步等步骤需本机连主库：探测并落库 master_install（basedir/datadir/socket/cnf_path）。
+
+    优先 DBA SQL（SHOW VARIABLES），不足时 SSH 主库按 mysqld 进程补齐；已完整则复用。
+    """
+    resolved = dict(job.resolved_params or {})
+    context = resolved.setdefault("context", {})
+    master_id = context.get("master_instance_id")
+    if not master_id:
+        raise ServiceError("从库任务缺少 master_instance_id，无法解析主库部署路径")
+
+    if not context.get("master_deploy_host_id"):
+        master = DatabaseInstance.objects.get(id=int(master_id))
+        endpoint = resolve_mysql_master_replication_endpoint(
+            master=master,
+            slave_target_host_id=job.target_host_id,
+        )
+        if endpoint.get("master_deploy_host_id"):
+            context["master_deploy_host_id"] = endpoint["master_deploy_host_id"]
+        if endpoint.get("master_host") and not context.get("master_host"):
+            context["master_host"] = endpoint["master_host"]
+        if endpoint.get("master_port") and not context.get("master_port"):
+            context["master_port"] = endpoint["master_port"]
+
+    existing = context.get("master_install") if isinstance(context.get("master_install"), dict) else {}
+    cached = _normalize_master_install(existing)
+    if existing.get("source"):
+        cached["source"] = str(existing["source"]).strip()
+    if _master_install_is_complete(cached):
+        context["master_install"] = {
+            k: cached[k] for k in (*_MASTER_INSTALL_KEYS, "source") if cached.get(k)
+        }
+        job.resolved_params = resolved
+        job.save(update_fields=["resolved_params", "updated_at"])
+        return
+
+    # 无 source 的历史推导路径不可信，重新探测（不沿用旧值）
+    install: dict[str, str] = {}
+    master_host = str(context.get("master_host") or "").strip()
+    master_port = int(context.get("master_port") or 3306)
+    master_deploy_host_id = context.get("master_deploy_host_id")
+    errors: list[str] = []
+    sources: list[str] = []
+
+    credentials = resolved.get("credentials") or {}
+    dump_account = credentials.get("dump_account") or {}
+    dump_user = str(dump_account.get("account_name") or "").strip()
+    dump_pswd = str(dump_account.get("account_pswd") or "")
+    if master_host and dump_user:
+        try:
+            sql_install = _discover_mysql_master_install_via_sql(
+                host=master_host,
+                port=master_port,
+                user=dump_user,
+                password=dump_pswd,
+            )
+            if sql_install:
+                install = _merge_master_install(install, sql_install)
+                sources.append("sql")
+        except Exception as exc:  # noqa: BLE001 — 回退进程探测
+            errors.append(f"SQL探测失败: {exc}")
+
+    # SQL 拿不到 cnf_path（无 defaults-file 变量）；缺字段时再用进程补齐
+    need_process = not all(install.get(k) for k in ("basedir", "datadir", "socket", "cnf_path"))
+    if need_process:
+        if not master_deploy_host_id:
+            if (
+                install.get("basedir")
+                and install.get("datadir")
+                and install.get("socket")
+                and not install.get("cnf_path")
+            ):
+                derived = _derive_cnf_path_from_socket(install["socket"])
+                if derived:
+                    install["cnf_path"] = derived
+                    sources.append("derived")
+            if not all(install.get(k) for k in _MASTER_INSTALL_KEYS):
+                raise ServiceError(
+                    "主库路径未探测完整，且缺少 master_deploy_host_id，无法进程探测"
+                    + (f"（{'; '.join(errors)}）" if errors else "")
+                )
+        else:
+            try:
+                proc_install = _discover_mysql_master_install_via_process(
+                    host_id=int(master_deploy_host_id),
+                    port=master_port,
+                )
+                if proc_install:
+                    install = _merge_master_install(install, proc_install)
+                    sources.append("process")
+            except ServiceError as exc:
+                errors.append(str(exc))
+                if (
+                    install.get("basedir")
+                    and install.get("datadir")
+                    and install.get("socket")
+                    and not install.get("cnf_path")
+                ):
+                    derived = _derive_cnf_path_from_socket(install["socket"])
+                    if derived:
+                        install["cnf_path"] = derived
+                        sources.append("derived")
+                if not all(install.get(k) for k in _MASTER_INSTALL_KEYS):
+                    raise ServiceError(
+                        "无法识别主库 basedir/datadir/socket/cnf_path: "
+                        + "; ".join(errors)
+                    ) from exc
+
+    if not install.get("cnf_path") and install.get("socket"):
+        derived = _derive_cnf_path_from_socket(install["socket"])
+        if derived:
+            install["cnf_path"] = derived
+            if "derived" not in sources:
+                sources.append("derived")
+
+    if not all(install.get(k) for k in _MASTER_INSTALL_KEYS):
+        missing = [k for k in _MASTER_INSTALL_KEYS if not install.get(k)]
+        raise ServiceError(
+            "主库路径探测不完整，缺少: "
+            + ", ".join(missing)
+            + (f"（{'; '.join(errors)}）" if errors else "")
+        )
+
+    if "sql" in sources and "process" in sources:
+        install["source"] = "sql+process"
+    elif "sql" in sources and "derived" in sources and "process" not in sources:
+        install["source"] = "sql"
+    elif "process" in sources:
+        install["source"] = "process"
+    elif "sql" in sources:
+        install["source"] = "sql"
+    else:
+        install["source"] = "derived"
+
+    context["master_install"] = {
+        key: install[key] for key in (*_MASTER_INSTALL_KEYS, "source") if install.get(key)
+    }
     job.resolved_params = resolved
     job.save(update_fields=["resolved_params", "updated_at"])
 

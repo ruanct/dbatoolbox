@@ -10,13 +10,14 @@ from django.utils import timezone
 from .models import BatchTask, BatchTaskHost, FileDistTask, FileDistTaskHost, HostAccount, HostIP
 
 
-def _build_inventory(host_ids, python_interpreter_by_host_id=None):
+def _build_inventory(host_ids, python_interpreter_by_host_id=None, host_groups=None):
     """构建 ansible inventory 内容。"""
     from .ansible_inventory import build_inventory
 
     return build_inventory(
         host_ids,
         python_interpreter_by_host_id=python_interpreter_by_host_id,
+        host_groups=host_groups,
     )
 
 
